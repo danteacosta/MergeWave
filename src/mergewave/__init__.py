@@ -16,7 +16,7 @@ from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
 from .linear_adapter import LinearGraphQLAdapter, LinearGraphQLTransport, UrllibLinearTransport
 from .persistence import EventRecord, SqliteEventLog
-from .reliability import Arp3Recorder
+from .reliability import Arp3Contracts, Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec, RuntimeCapabilities, WorkerProfile, classify_runtime_event
 from .scheduler import Scheduler
@@ -41,6 +41,7 @@ __all__ = [
     "ActiveAssignment",
     "ControllerProjection",
     "Arp3Recorder",
+    "Arp3Contracts",
     "CliAgentRuntime",
     "DeliveryObservation",
     "DeliveryController",

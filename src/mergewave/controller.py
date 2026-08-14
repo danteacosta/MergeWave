@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
+import json
 
 from .domain import ExecutionWave, HumanGate, PullRequest, ValidationEvidence, WorkAttempt
 from .contracts import WorkItem, WorkItemState
@@ -360,6 +360,7 @@ class DeliveryController:
             executor_version="1",
             configuration_hash=configuration_hash,
             capture_policy="metadata",
+            environment={"runtime": type(self._runtime).__qualname__},
             extensions={
                 "work_item_id": dispatch.work_item_id,
                 "repository": workspace.repository,
@@ -388,8 +389,9 @@ class DeliveryController:
             observed=decision.status,
             expected="approved",
             comparator="equals",
-            stage="delivery",
+            stage="final_artifact",
             capture_policy="metadata",
+            artifact_payload=self._delivery_artifact(item_id, handle),
         )
         self._recorder.record_evidence(
             evidence_id=f"{self._evidence_id(handle)}:acceptance",
@@ -398,19 +400,25 @@ class DeliveryController:
             observed=self._validation_evidence[item_id].acceptance_criteria_signal,
             expected="complete",
             comparator="informational",
-            stage="acceptance",
+            stage="pre_final",
             capture_policy="metadata",
+            artifact_payload=self._delivery_artifact(item_id, handle),
         )
-        self._recorder.record_gate_decision(
-            gate_id=self._gate_id(handle),
-            run_id=handle.run_id,
-            decision=decision.status,
-            checkpoint="merge",
-            policy_version="mergewave/v0.1",
-            decision_authority="human",
-            evidence_ids=[self._evidence_id(handle)],
-            capture_policy="metadata",
-        )
+        if decision.status != "pending":
+            reasons = ()
+            if decision.failure is not None:
+                reasons = ((decision.failure.code, decision.failure.human_summary),)
+            self._recorder.record_gate_decision(
+                gate_id=self._gate_id(handle),
+                run_id=handle.run_id,
+                decision=decision.status,
+                checkpoint="merge",
+                policy_version="mergewave/v0.1",
+                decision_authority="human",
+                evidence_ids=[self._evidence_id(handle), f"{self._evidence_id(handle)}:acceptance"],
+                capture_policy="metadata",
+                reasons=reasons,
+            )
 
     @staticmethod
     def _gate_id(handle: RunHandle) -> str:
@@ -423,6 +431,22 @@ class DeliveryController:
     def _append_event(self, kind: str, payload: Mapping[str, object], key: str) -> None:
         if self._event_log is not None:
             self._event_log.append(kind, payload, idempotency_key=key)
+
+    def _delivery_artifact(self, item_id: str, handle: RunHandle) -> dict[str, object]:
+        evidence = self._validation_evidence[item_id]
+        pull_request = self._pull_requests.get(item_id)
+        return json.loads(
+            json.dumps(
+                {
+                    "work_item_id": item_id,
+                    "attempt_id": handle.run_id,
+                    "validation_evidence": asdict(evidence),
+                    "pull_request": asdict(pull_request) if pull_request else None,
+                },
+                default=str,
+                sort_keys=True,
+            )
+        )
 
     def _set_ticket_state(self, item_id: str, state: str) -> None:
         self._tracker.transition_state(item_id, state)
