@@ -29,6 +29,7 @@ The current offline slice includes:
 - Work Item validation and explicit DAG cycle detection;
 - `continuous_frontier` and `wave_barrier` scheduling;
 - SQLite event-log idempotency;
+- idempotent reconciliation keyed by item and observed base revision;
 - Git worktree creation, HEAD tracking, and ancestry checks;
 - generic CLI runtime fallback;
 - ARP 3.0 wire recording through an injected sink;

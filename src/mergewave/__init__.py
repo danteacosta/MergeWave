@@ -12,6 +12,7 @@ from .contracts import (
 from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .persistence import EventRecord, SqliteEventLog
 from .reliability import Arp3Recorder
+from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec
 from .scheduler import Scheduler
 from .simulator import (
@@ -39,6 +40,8 @@ __all__ = [
     "MergeWaveSimulator",
     "RunHandle",
     "RunSpec",
+    "ReconciliationLoop",
+    "ReconciliationResult",
     "Scheduler",
     "SqliteEventLog",
     "ValidationIssue",
