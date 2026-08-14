@@ -9,8 +9,10 @@ from .contracts import (
     compile_dependency_graph,
     validate_work_item,
 )
+from .acp_runtime import AcpAgentRuntime, AcpTransport
 from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
+from .linear_adapter import LinearGraphQLAdapter, LinearGraphQLTransport, UrllibLinearTransport
 from .persistence import EventRecord, SqliteEventLog
 from .reliability import Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
@@ -29,6 +31,8 @@ __all__ = [
     "DependencyGraph",
     "DependencyGraphError",
     "AgentEvent",
+    "AcpAgentRuntime",
+    "AcpTransport",
     "Arp3Recorder",
     "CliAgentRuntime",
     "DeliveryObservation",
@@ -40,6 +44,8 @@ __all__ = [
     "GitWorkspaceFactory",
     "GitHubDeliveryObserver",
     "GitHubTransport",
+    "LinearGraphQLAdapter",
+    "LinearGraphQLTransport",
     "MergeWaveSimulator",
     "RunHandle",
     "RunSpec",
@@ -53,6 +59,7 @@ __all__ = [
     "Workspace",
     "WorkspaceDriftError",
     "UrllibGitHubTransport",
+    "UrllibLinearTransport",
     "compile_dependency_graph",
     "validate_work_item",
 ]

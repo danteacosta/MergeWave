@@ -21,8 +21,9 @@ authoring example.
 ## Status
 
 Early development. The simulator and contract tests are the first acceptance
-gate. Linear, GitHub, and ACP adapters remain behind ports for the next slice;
-the generic CLI runtime and ARP 3.0 recorder are already available.
+gate. Linear, GitHub, and ACP adapters are available behind ports; the generic
+CLI runtime and ARP 3.0 recorder remain available for deployments that do not
+use those adapters.
 
 The current offline slice includes:
 
@@ -32,6 +33,9 @@ The current offline slice includes:
 - idempotent reconciliation keyed by item and observed base revision;
 - Git worktree creation, HEAD tracking, and ancestry checks;
 - generic CLI runtime fallback;
+- Linear GraphQL tracker adapter with explicit blocker mapping;
+- GitHub delivery observer for PR, CI, review, scope, merge, and ancestry evidence;
+- ACP runtime adapter for model-neutral session/event transports;
 - ARP 3.0 wire recording through an injected sink;
 - deterministic simulator trace and CLI demo.
 
