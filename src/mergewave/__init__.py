@@ -9,7 +9,7 @@ from .contracts import (
     compile_dependency_graph,
     validate_work_item,
 )
-from .acp_runtime import AcpAgentRuntime, AcpTransport
+from .acp_runtime import AcpAgentRuntime, AcpTransport, StdioAcpTransport
 from .controller import ActiveAssignment, DeliveryController
 from .domain import ExecutionWave, GateStatus, HumanGate, PullRequest, ValidationEvidence, WorkAttempt
 from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
@@ -18,7 +18,7 @@ from .linear_adapter import LinearGraphQLAdapter, LinearGraphQLTransport, Urllib
 from .persistence import EventRecord, SqliteEventLog
 from .reliability import Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
-from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec
+from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec, RuntimeCapabilities, WorkerProfile, classify_runtime_event
 from .scheduler import Scheduler
 from .smoke import SmokeConfigurationError, github_read_only_smoke, linear_read_only_smoke
 from .simulator import (
@@ -36,6 +36,7 @@ __all__ = [
     "AgentEvent",
     "AcpAgentRuntime",
     "AcpTransport",
+    "StdioAcpTransport",
     "ActiveAssignment",
     "Arp3Recorder",
     "CliAgentRuntime",
@@ -58,6 +59,7 @@ __all__ = [
     "MergeWaveSimulator",
     "RunHandle",
     "RunSpec",
+    "RuntimeCapabilities",
     "ReconciliationLoop",
     "ReconciliationResult",
     "Scheduler",
@@ -70,6 +72,8 @@ __all__ = [
     "WorkAttempt",
     "Workspace",
     "WorkspaceDriftError",
+    "WorkerProfile",
+    "classify_runtime_event",
     "UrllibGitHubTransport",
     "UrllibLinearTransport",
     "compile_dependency_graph",

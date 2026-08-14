@@ -5,6 +5,7 @@ import unittest
 from mergewave.controller import DeliveryController
 from mergewave.contracts import WorkItemState
 from mergewave.runtime import AgentEvent, RunHandle, RunSpec
+from mergewave.runtime import classify_runtime_event
 from mergewave.simulator import DeliveryObservation, MergeWaveSimulator
 from mergewave.git_workspace import Workspace
 
@@ -194,6 +195,23 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
         gate_decision = recorder.calls[-1][1]
         self.assertEqual(gate_decision["decision_authority"], "human")
         self.assertEqual(gate_decision["decision"], "approved")
+
+    def test_runtime_timeout_routes_item_to_needs_attention(self) -> None:
+        simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
+        tracker = FakeTracker()
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=tracker,
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver({}),
+        )
+        controller.dispatch_ready({"CTRL-1": "Implement"})
+
+        failure = controller.observe_runtime_events("CTRL-1", [AgentEvent("runtime.timeout", {"timeout_seconds": 1})])
+
+        self.assertEqual(failure.code, "agent_timeout")
+        self.assertEqual(tracker.transitions[-1], ("CTRL-1", WorkItemState.NEEDS_ATTENTION.value))
 
     def test_unlinked_pull_request_routes_item_to_needs_attention(self) -> None:
         simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")

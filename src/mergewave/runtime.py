@@ -9,11 +9,32 @@ from typing import Protocol, cast
 
 
 @dataclass(frozen=True)
+class WorkerProfile:
+    runtime: str
+    agent: str
+    model: str | None = None
+    permissions: str = "repo-write"
+    sandbox: str = "restricted"
+    max_cost: float | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeCapabilities:
+    supports_continue: bool
+    supports_streaming: bool
+    supports_cancel: bool
+    transports: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RunSpec:
     run_id: str
     work_item_id: str
     prompt: str
     workspace_path: str
+    work_item: object | None = None
+    workspace: object | None = None
+    worker_profile: WorkerProfile | None = None
 
 
 @dataclass(frozen=True)
@@ -33,16 +54,23 @@ class AgentRuntime(Protocol):
 
     def stream(self, handle: RunHandle) -> Iterable[AgentEvent]: ...
 
+    def continue_run(self, handle: RunHandle, input: str) -> None: ...
+
     def cancel(self, handle: RunHandle) -> AgentEvent: ...
+
+    def capabilities(self) -> RuntimeCapabilities: ...
 
 
 class CliAgentRuntime:
     """Execute any compatible agent command inside an assigned workspace."""
 
-    def __init__(self, command: Sequence[str]) -> None:
+    def __init__(self, command: Sequence[str], *, timeout_seconds: float | None = None) -> None:
         if not command:
             raise ValueError("CLI runtime command cannot be empty")
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
         self._command = tuple(command)
+        self._timeout_seconds = timeout_seconds
 
     def start(self, spec: RunSpec) -> RunHandle:
         process = subprocess.Popen(
@@ -64,6 +92,9 @@ class CliAgentRuntime:
         process = cast(subprocess.Popen[str], handle.runtime_ref)
         if process.stdout is None:
             raise RuntimeError("CLI runtime did not expose stdout")
+        if self._timeout_seconds is not None:
+            yield from self._stream_with_timeout(process)
+            return
         try:
             for line in process.stdout:
                 yield AgentEvent("runtime.output", {"line": line.rstrip("\n")})
@@ -72,9 +103,40 @@ class CliAgentRuntime:
         returncode = process.wait()
         yield AgentEvent("runtime.exited", {"returncode": returncode})
 
+    def continue_run(self, handle: RunHandle, input: str) -> None:
+        raise RuntimeError("CLI runtime does not support continue after stdin is closed")
+
     def cancel(self, handle: RunHandle) -> AgentEvent:
         process = cast(subprocess.Popen[str], handle.runtime_ref)
         if process.poll() is None:
             process.terminate()
             process.wait()
         return AgentEvent("runtime.cancelled", {"returncode": process.returncode})
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(False, True, True, ("subprocess",))
+
+    def _stream_with_timeout(self, process: subprocess.Popen[str]) -> Iterable[AgentEvent]:
+        timed_out = False
+        try:
+            process.wait(timeout=self._timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            process.terminate()
+            process.wait()
+        output = process.stdout.read() if process.stdout is not None else ""
+        if process.stdout is not None:
+            process.stdout.close()
+        if timed_out:
+            yield AgentEvent("runtime.timeout", {"timeout_seconds": self._timeout_seconds})
+        for line in output.splitlines():
+            yield AgentEvent("runtime.output", {"line": line})
+        yield AgentEvent("runtime.exited", {"returncode": process.returncode})
+
+
+def classify_runtime_event(event: AgentEvent) -> str | None:
+    if event.kind == "runtime.timeout":
+        return "agent_timeout"
+    if event.kind == "runtime.exited" and event.payload.get("returncode") not in {0, None}:
+        return "runtime_failed"
+    return None
