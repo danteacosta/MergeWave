@@ -47,6 +47,29 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m mergewave --demo
 ```
 
+### Read-only provider smoke checks
+
+The smoke commands perform observation only; they do not change Linear issues,
+GitHub pull requests, branches, reviews, or merges. They require credentials
+only when invoked and are safe to omit from CI.
+
+```console
+MERGEWAVE_LINEAR_API_KEY=... \
+MERGEWAVE_LINEAR_TEAM_ID=... \
+PYTHONPATH=src python -m mergewave --linear-smoke
+
+MERGEWAVE_GITHUB_TOKEN=... \
+MERGEWAVE_GITHUB_REPOSITORY=owner/repository \
+MERGEWAVE_GITHUB_ITEM_ID=CTRL-1 \
+MERGEWAVE_GITHUB_BRANCH=mergewave/CTRL-1 \
+MERGEWAVE_GITHUB_BASE_REVISION=main \
+MERGEWAVE_GITHUB_SCOPE_PATHS=src/mergewave/,tests/ \
+PYTHONPATH=src python -m mergewave --github-smoke
+```
+
+The commands emit one JSON summary suitable for attaching to a run record or
+using as input to a later reconciliation step.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
