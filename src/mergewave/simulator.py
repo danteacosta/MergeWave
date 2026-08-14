@@ -203,6 +203,16 @@ class MergeWaveSimulator:
                 "Stop and report that workspace creation violated the initial HEAD invariant.",
                 "Recreate the workspace with initial_head_revision equal to base_revision.",
             )
+        if not observation.pr_head_sha:
+            return FailureRecord(
+                "missing_pull_request",
+                "delivery",
+                "blocking",
+                True,
+                "No pull request linked to the dispatched work was observed.",
+                "Create or link the pull request before requesting delivery verification.",
+                "Refresh pull-request observation and keep the item blocked until it exists.",
+            )
         if observation.ci_head_sha != observation.pr_head_sha:
             return FailureRecord(
                 "stale_ci",

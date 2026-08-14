@@ -27,7 +27,7 @@ class WorkspaceFactory(Protocol):
 
 
 class DeliveryObserver(Protocol):
-    def observe(self, item_id: str, workspace_id: str) -> DeliveryObservation: ...
+    def observe(self, item_id: str, workspace: Workspace) -> DeliveryObservation: ...
 
 
 class ReliabilityRecorder(Protocol):

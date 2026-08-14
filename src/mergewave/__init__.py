@@ -10,6 +10,7 @@ from .contracts import (
     validate_work_item,
 )
 from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
+from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
 from .persistence import EventRecord, SqliteEventLog
 from .reliability import Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
@@ -37,6 +38,8 @@ __all__ = [
     "FailureRecord",
     "GateDecision",
     "GitWorkspaceFactory",
+    "GitHubDeliveryObserver",
+    "GitHubTransport",
     "MergeWaveSimulator",
     "RunHandle",
     "RunSpec",
@@ -49,6 +52,7 @@ __all__ = [
     "WorkItemValidationError",
     "Workspace",
     "WorkspaceDriftError",
+    "UrllibGitHubTransport",
     "compile_dependency_graph",
     "validate_work_item",
 ]

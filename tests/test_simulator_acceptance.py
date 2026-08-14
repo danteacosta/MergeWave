@@ -148,6 +148,21 @@ class MergeWaveSimulatorAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(simulator.evaluate_gate("A").status, "approved")
 
+    def test_missing_pull_request_is_not_an_ancestry_failure(self) -> None:
+        simulator = MergeWaveSimulator(
+            work_items(), policy="continuous_frontier", base_revision="main-0"
+        )
+        simulator.dispatch_ready()
+        simulator.observe_delivery(
+            "A",
+            replace(valid_delivery("A"), pr_head_sha="", ci_head_sha="", ci_passed=False, base_is_ancestor=False),
+        )
+
+        decision = simulator.evaluate_gate("A")
+
+        self.assertEqual(decision.status, "blocked")
+        self.assertEqual(decision.failure.code, "missing_pull_request")
+
     def test_simulator_exposes_a_trace_of_delivery_decisions(self) -> None:
         simulator = MergeWaveSimulator(
             work_items(), policy="continuous_frontier", base_revision="main-0"
