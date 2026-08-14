@@ -57,6 +57,24 @@ state metadata.
 new frontier is created from the observed current target-base revision, never
 from an unmerged agent branch.
 
+The `base_revision` is captured and fixed at dispatch. Workspace creation MUST
+check out exactly that revision; it MUST NOT replace it with whatever HEAD is
+current when a queued workspace is finally created. If the fixed revision is
+unavailable, creation fails and no attempt is started.
+
+There is at most one active `WorkAttempt` per work item. A retry is a new
+attempt and must first cancel or terminally mark the previous attempt, destroy
+or quarantine its workspace, and keep a reference to the superseded attempt.
+An old attempt or its PR cannot satisfy the new attempt's gate. Automatic retry
+or concurrent attempts are not enabled in v0.2; a retry is an explicit
+operator/controller operation.
+
+`wave_barrier` is intentionally strict. A slow or blocked item can hold the
+barrier even when it is not a dependency of every remaining item. The escape
+path is an explicit human decision to cancel or remove that item from the
+project graph, followed by a new reconciliation and wave calculation; timeout
+alone never silently skips an item.
+
 ## Gate contract
 
 The controller enriches GitHub delivery observations with independent Linear
@@ -75,7 +93,11 @@ Acceptance criteria are recorded as a weak signal (`complete`, `partial`, or
 
 Scope violations are visible `out_of_scope_diff` warnings in v1. They are not
 silently ignored and do not hard-block the gate; adopters may promote the
-warning to a policy decision later.
+warning to a policy decision later. The GitHub adapter implements the v1
+best-effort check as an allowlist of declared path prefixes from the work-item
+scope. Every changed file must match a prefix; an empty or unavailable
+allowlist produces a warning rather than an approval claim. This is not a
+complete semantic or generated-file analysis.
 
 The default gate remains human-controlled. Auto-merge is out of scope.
 
@@ -130,7 +152,30 @@ The current ports and adapters are:
 - optional ARP 3.0 recorder.
 
 Webhooks, multi-repository scheduling, dashboard UI, dependency inference,
-conflict resolution, and auto-merge remain non-goals for this release.
+conflict resolution, auto-merge, project-wide agent concurrency limits, and
+project-wide cost budgets remain non-goals for this release. Runtime-level
+cost limits and sandbox permissions exist in `WorkerProfile`; centralized
+budget admission is deferred to a later policy layer.
+
+## Naming and public positioning
+
+Internal orchestrator names are intentionally not public project-name
+candidates. MergeWave is the public project name. The one-line positioning is:
+
+> A merge-gated, dependency-aware agentic delivery control plane.
+
+This distinguishes MergeWave from implementation agents, issue trackers, and
+generic workflow engines without claiming that it replaces them.
+
+## ARP 3.0 integration
+
+`Arp3Recorder` is the optional adapter boundary. It constructs
+`RunManifestV3`, `EvidenceRecord`, `GateRequestV3`, and `GateDecisionV3`, calls
+`.to_dict()`, and validates every payload with ARP `check_contract` before
+writing it to the sink. It records `created_at`, `environment`, requested and
+decided timestamps, valid evidence stages, `approve`/`block` decisions,
+namespaced `software-delivery/v1` extensions, and content-addressed artifact
+URI/hash references. A pending gate emits a request but no decision.
 
 ## Acceptance slice
 

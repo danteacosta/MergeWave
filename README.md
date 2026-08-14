@@ -41,6 +41,7 @@ The current offline slice includes:
 - controller-driven reconciliation, automatic next-frontier dispatch, and event-log state projection;
 - stable failure classification for workspace, runtime, tracker, delivery, and reconciliation failures;
 - optional ARP 3.0 wire recording from controller runs, gate requests, evidence, and decisions;
+- ARP 3.0 value-object mapping with contract validation, namespaced delivery extensions, and content-addressed evidence artifacts;
 - deterministic simulator trace and CLI demo.
 
 ## Development
@@ -72,6 +73,9 @@ PYTHONPATH=src python -m mergewave --github-smoke
 
 The commands emit one JSON summary suitable for attaching to a run record or
 using as input to a later reconciliation step.
+
+The ARP integration is optional. Install ARP 3.x in the environment before
+constructing `Arp3Recorder`; the core remains usable without that dependency.
 
 ## License
 
