@@ -69,6 +69,17 @@ class FakeObserver:
         return self.observations[item_id]
 
 
+class FakeRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def __getattr__(self, name: str):
+        def record(**kwargs: object) -> None:
+            self.calls.append((name, kwargs))
+
+        return record
+
+
 class DeliveryControllerAcceptanceTests(unittest.TestCase):
     def test_missing_prompt_is_rejected_before_scheduler_state_changes(self) -> None:
         simulator = MergeWaveSimulator(
@@ -127,6 +138,40 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
         self.assertEqual(tuple(item.work_item_id for item in second), ("CTRL-2",))
         self.assertEqual(workspaces.created[-1].base_revision, "main-1")
         self.assertEqual(runtime.specs[-1].prompt, "Implement second")
+
+    def test_controller_emits_arp_run_gate_evidence_and_decision(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "CTRL-1", "blocked_by": []}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+        )
+        recorder = FakeRecorder()
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=FakeTracker(),
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver(
+                {
+                    "CTRL-1": DeliveryObservation(
+                        "demo-repository", "/worktrees/CTRL-1", "mergewave/CTRL-1",
+                        "main-0", "main-0", "commit-1", "commit-1", "commit-1",
+                        True, 1, True, True, "main-1", True,
+                    )
+                }
+            ),
+            recorder=recorder,
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement first"})
+        decision = controller.reconcile("CTRL-1")
+
+        self.assertEqual(decision.status, "approved")
+        call_names = [name for name, _ in recorder.calls]
+        self.assertEqual(call_names, ["record_run", "record_gate_request", "record_evidence", "record_gate_decision"])
+        gate_decision = recorder.calls[-1][1]
+        self.assertEqual(gate_decision["decision_authority"], "human")
+        self.assertEqual(gate_decision["decision"], "approved")
 
 
 if __name__ == "__main__":
