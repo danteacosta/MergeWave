@@ -30,6 +30,7 @@ def valid_item(item_id: str = "CTRL-1", blocked_by: list[str] | None = None) -> 
         "risk": {"level": "low", "reason": "The change is local."},
         "rollout": {"strategy": "Enable after simulator passes.", "kill_switch": "Disable the classifier."},
         "observability": {"events": ["delivery.failure_recorded"], "metrics": ["delivery.failures"]},
+        "state": "Ready",
     }
 
 
@@ -39,6 +40,7 @@ class WorkItemContractTests(unittest.TestCase):
 
         self.assertEqual(work_item.item_id, "CTRL-1")
         self.assertEqual(work_item.blocked_by, ())
+        self.assertEqual(work_item.state.value, "Ready")
 
     def test_missing_blocked_by_is_rejected_before_scheduling(self) -> None:
         item = valid_item()

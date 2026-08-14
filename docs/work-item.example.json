@@ -59,5 +59,6 @@
   "observability": {
     "events": ["delivery.failure_recorded", "delivery.dispatch_suppressed"],
     "metrics": ["delivery.blocked_items_by_failure_code"]
-  }
+  },
+  "state": "Ready"
 }

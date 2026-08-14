@@ -11,6 +11,7 @@ from .contracts import (
 )
 from .acp_runtime import AcpAgentRuntime, AcpTransport
 from .controller import ActiveAssignment, DeliveryController
+from .domain import ExecutionWave, GateStatus, HumanGate, PullRequest, ValidationEvidence, WorkAttempt
 from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
 from .linear_adapter import LinearGraphQLAdapter, LinearGraphQLTransport, UrllibLinearTransport
@@ -40,6 +41,10 @@ __all__ = [
     "CliAgentRuntime",
     "DeliveryObservation",
     "DeliveryController",
+    "ExecutionWave",
+    "GateStatus",
+    "HumanGate",
+    "PullRequest",
     "Dispatch",
     "Event",
     "EventRecord",
@@ -59,8 +64,10 @@ __all__ = [
     "SmokeConfigurationError",
     "SqliteEventLog",
     "ValidationIssue",
+    "ValidationEvidence",
     "WorkItem",
     "WorkItemValidationError",
+    "WorkAttempt",
     "Workspace",
     "WorkspaceDriftError",
     "UrllibGitHubTransport",
