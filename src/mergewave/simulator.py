@@ -24,6 +24,13 @@ class DeliveryObservation:
     merged: bool
     merge_revision: str | None
     base_is_ancestor: bool
+    pr_id: str = ""
+    pr_url: str = ""
+    base_sha_at_open: str = ""
+    reviews_resolved: bool | None = None
+    linked_to_ticket: bool | None = None
+    acceptance_criteria_signal: str = "unknown"
+    merged_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,7 @@ class FailureRecord:
 class GateDecision:
     status: str
     failure: FailureRecord | None = None
+    warnings: tuple[FailureRecord, ...] = ()
 
 
 class MergeWaveSimulator:
@@ -153,12 +161,21 @@ class MergeWaveSimulator:
 
         dispatch = self._dispatched[item_id]
         failure = self._classify(dispatch, observation)
-        decision = GateDecision("blocked", failure) if failure else GateDecision("approved")
+        warnings = self._warnings(observation)
+        decision = GateDecision("blocked", failure, warnings) if failure else GateDecision("approved", warnings=warnings)
         self._decisions[item_id] = decision
         if decision.status == "approved":
             self._scheduler.release(item_id)
         self._events.append(Event("gate.decided", item_id))
         return decision
+
+    def can_refresh_target_base(self) -> bool:
+        if self._policy != "wave_barrier":
+            return True
+        return bool(self._active_wave) and all(
+            self._decisions.get(item_id, GateDecision("pending")).status == "approved"
+            for item_id in self._active_wave
+        )
 
     def trace(self) -> tuple[Event, ...]:
         return tuple(self._events)
@@ -235,6 +252,13 @@ class MergeWaveSimulator:
                 "Wait for checks that target the current pull-request head before requesting release.",
                 "Refresh CI and re-evaluate the gate for the current head revision.",
             )
+        if observation.linked_to_ticket is False:
+            return FailureRecord(
+                "pull_request_unlinked", "delivery", "blocking", True,
+                "The pull request was not independently verified as linked to the work item.",
+                "Do not release this item until the tracker confirms the pull request link.",
+                "Create or repair the tracker attachment and reconcile again.",
+            )
         if not observation.base_is_ancestor:
             return FailureRecord(
                 "base_revision_mismatch",
@@ -245,16 +269,6 @@ class MergeWaveSimulator:
                 "Rebase or recreate the work from the assigned base; do not release dependents.",
                 "Verify ancestry and create a new delivery from the correct base revision.",
             )
-        if not observation.scope_ok:
-            return FailureRecord(
-                "out_of_scope_diff",
-                "scope",
-                "blocking",
-                False,
-                "The pull-request diff contains paths outside the declared work-item scope.",
-                "Remove unrelated changes or update the work item through the authoring process.",
-                "Correct the diff and request a fresh scope observation.",
-            )
         if not observation.ci_passed:
             return FailureRecord(
                 "ci_failed",
@@ -264,6 +278,13 @@ class MergeWaveSimulator:
                 "A required CI check failed for the current pull-request head.",
                 "Inspect the failing check and repair the implementation before requesting release.",
                 "Fix CI failures and wait for a current green result.",
+            )
+        if observation.reviews_resolved is False:
+            return FailureRecord(
+                "review_changes_requested", "review", "blocking", True,
+                "A required review is unresolved or requested changes remain.",
+                "Resolve requested changes and obtain a current approval before release.",
+                "Reconcile review state after the author addresses the feedback.",
             )
         if observation.approvals < 1:
             return FailureRecord(
@@ -286,3 +307,16 @@ class MergeWaveSimulator:
                 "Wait for the merge and reconcile the target base revision.",
             )
         return None
+
+    @staticmethod
+    def _warnings(observation: DeliveryObservation) -> tuple[FailureRecord, ...]:
+        if observation.scope_ok:
+            return ()
+        return (
+            FailureRecord(
+                "out_of_scope_diff", "scope", "warning", False,
+                "The pull-request diff contains paths outside the declared work-item scope.",
+                "Review unrelated changes before accepting the delivery as a safe change.",
+                "Record the scope violation and remove unrelated changes when possible.",
+            ),
+        )

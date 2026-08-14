@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from mergewave.controller import DeliveryController
+from mergewave.contracts import WorkItemState
 from mergewave.runtime import AgentEvent, RunHandle, RunSpec
 from mergewave.simulator import DeliveryObservation, MergeWaveSimulator
 from mergewave.git_workspace import Workspace
@@ -11,6 +12,8 @@ from mergewave.git_workspace import Workspace
 class FakeTracker:
     def __init__(self) -> None:
         self.transitions: list[tuple[str, str]] = []
+        self.linked = True
+        self.acceptance_signal = "unknown"
 
     def transition_state(self, item_id: str, state: str) -> None:
         self.transitions.append((item_id, state))
@@ -23,6 +26,22 @@ class FakeTracker:
 
     def post_comment(self, item_id: str, body: str) -> None:
         pass
+
+    def pull_request_linked(self, item_id: str, url: str) -> bool:
+        return self.linked
+
+    def acceptance_criteria_signal(self, item_id: str) -> str:
+        return self.acceptance_signal
+
+
+class FakeBaseRevisionProvider:
+    def __init__(self, revision: str) -> None:
+        self.revision = revision
+        self.reads = 0
+
+    def current_revision(self) -> str:
+        self.reads += 1
+        return self.revision
 
 
 class FakeWorkspaceFactory:
@@ -130,7 +149,10 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(tuple(item.work_item_id for item in first), ("CTRL-1",))
         self.assertEqual(decision.status, "approved")
-        self.assertEqual(tracker.transitions, [("CTRL-1", "In Progress"), ("CTRL-1", "In Review")])
+        self.assertEqual(
+            tracker.transitions,
+            [("CTRL-1", WorkItemState.IN_PROGRESS.value), ("CTRL-1", WorkItemState.IN_REVIEW.value), ("CTRL-1", WorkItemState.DONE.value)],
+        )
 
         controller.refresh_target_base("main-1")
         second = controller.dispatch_ready({"CTRL-2": "Implement second"})
@@ -168,10 +190,73 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(decision.status, "approved")
         call_names = [name for name, _ in recorder.calls]
-        self.assertEqual(call_names, ["record_run", "record_gate_request", "record_evidence", "record_gate_decision"])
+        self.assertEqual(call_names, ["record_run", "record_gate_request", "record_evidence", "record_evidence", "record_gate_decision"])
         gate_decision = recorder.calls[-1][1]
         self.assertEqual(gate_decision["decision_authority"], "human")
         self.assertEqual(gate_decision["decision"], "approved")
+
+    def test_unlinked_pull_request_routes_item_to_needs_attention(self) -> None:
+        simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
+        tracker = FakeTracker()
+        tracker.linked = False
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=tracker,
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver({"CTRL-1": replace_delivery(linked_to_ticket=False)}),
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement"})
+        decision = controller.reconcile("CTRL-1")
+
+        self.assertEqual(decision.failure.code, "pull_request_unlinked")
+        self.assertEqual(tracker.transitions[-1], ("CTRL-1", WorkItemState.NEEDS_ATTENTION.value))
+
+    def test_scope_violation_is_a_visible_warning_not_a_hard_block(self) -> None:
+        simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=FakeTracker(),
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver({"CTRL-1": replace_delivery(scope_ok=False)}),
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement"})
+        decision = controller.reconcile("CTRL-1")
+
+        self.assertEqual(decision.status, "approved")
+        self.assertEqual(decision.warnings[0].code, "out_of_scope_diff")
+
+    def test_approved_delivery_refreshes_base_from_provider(self) -> None:
+        simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
+        provider = FakeBaseRevisionProvider("main-1")
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=FakeTracker(),
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver({"CTRL-1": replace_delivery()}),
+            base_revision_provider=provider,
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement"})
+        controller.reconcile("CTRL-1")
+
+        self.assertEqual(provider.reads, 1)
+        self.assertEqual(controller._simulator.preview_ready(), ())
+
+
+def replace_delivery(**changes: object) -> DeliveryObservation:
+    from dataclasses import replace
+
+    base = DeliveryObservation(
+        "demo-repository", "/worktrees/CTRL-1", "mergewave/CTRL-1",
+        "main-0", "main-0", "commit-1", "commit-1", "commit-1",
+        True, 1, True, True, "main-1", True,
+    )
+    return replace(base, **changes)
 
 
 if __name__ == "__main__":
