@@ -26,6 +26,16 @@ class Scheduler:
         self._barrier_open = True
 
     def dispatch_ready(self) -> tuple[Dispatch, ...]:
+        ready = self.preview_ready()
+        for dispatch in ready:
+            self._dispatched.add(dispatch.work_item_id)
+
+        if self._policy == "wave_barrier" and ready:
+            self._active_wave = {dispatch.work_item_id for dispatch in ready}
+            self._barrier_open = False
+        return ready
+
+    def preview_ready(self) -> tuple[Dispatch, ...]:
         if self._policy == "wave_barrier" and not self._barrier_open:
             return ()
 
@@ -34,12 +44,7 @@ class Scheduler:
             if item.item_id in self._dispatched:
                 continue
             dispatch = Dispatch(item.item_id, self._base_revision)
-            self._dispatched.add(item.item_id)
             ready.append(dispatch)
-
-        if self._policy == "wave_barrier" and ready:
-            self._active_wave = {dispatch.work_item_id for dispatch in ready}
-            self._barrier_open = False
         return tuple(ready)
 
     def release(self, item_id: str) -> None:
