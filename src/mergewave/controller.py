@@ -198,6 +198,7 @@ class DeliveryController:
             self._review_state_published.add(item_id)
         decision = self._simulator.evaluate_gate(item_id)
         self._record_domain_evidence(item_id, observation, decision)
+        self._record_wave_state()
         if decision.status == "approved":
             if item_id not in self._done_state_published:
                 self._set_ticket_state(item_id, WorkItemState.DONE.value)
@@ -443,6 +444,18 @@ class DeliveryController:
             )
             return ()
         return self.dispatch_ready(self._prompts)
+
+    def _record_wave_state(self) -> None:
+        wave = self._simulator.current_execution_wave()
+        if wave is None:
+            return
+        self._waves[wave.wave_id] = wave
+        if wave.state == "released":
+            self._append_event(
+                "execution_wave.state_changed",
+                {"wave_id": wave.wave_id, "state": wave.state},
+                f"wave-state:{wave.wave_id}:{wave.state}",
+            )
 
 
 __all__ = ["ActiveAssignment", "ControllerProjection", "DeliveryController"]

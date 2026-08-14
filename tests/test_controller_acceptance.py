@@ -283,6 +283,7 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
         self.assertEqual(controller.execution_wave().work_item_ids, ("CTRL-1",))
         controller.reconcile("CTRL-1")
         self.assertEqual(controller.work_attempt("CTRL-1").state, "released")
+        self.assertEqual(controller.execution_wave().state, "released")
 
     def test_controller_dispatches_the_next_frontier_after_fresh_base_observation(self) -> None:
         simulator = MergeWaveSimulator(
