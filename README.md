@@ -9,8 +9,12 @@ first milestone is an offline deterministic simulator proving dependency-aware
 waves, merge-gated release, and the distinction between normal commits,
 workspace drift, and base-revision ancestry failures.
 
-The project is based on the [Merge-Gated, Dependency-Aware Agentic Delivery
-Control Plane specification](docs/merge-gated-delivery-control-plane-spec.md).
+The project is based on the [MergeWave simulator-first design](docs/superpowers/specs/2026-08-14-mergewave-design.md), which implements the
+authority and workspace invariants from the Merge-Gated, Dependency-Aware
+Agentic Delivery Control Plane specification.
+
+The executable Work Item contract is defined in
+[docs/work-item.schema.json](docs/work-item.schema.json).
 
 ## Status
 
@@ -21,7 +25,7 @@ ports after the offline path is proven.
 ## Development
 
 ```console
-python -m unittest discover -s tests -v
+PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
 ## License

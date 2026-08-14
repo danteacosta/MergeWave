@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mergewave.dev/schemas/work-item.schema.json",
+  "title": "MergeWave Executable Work Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "problem", "scope", "behavior", "technical_context", "affected_paths", "acceptance_criteria", "test_scenarios", "blocked_by", "estimate_points", "risk", "rollout", "observability"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[A-Z][A-Z0-9_-]*-[0-9]+$"},
+    "title": {"type": "string", "minLength": 12},
+    "problem": {"type": "string", "minLength": 30},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["in", "out"],
+      "properties": {
+        "in": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "out": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "behavior": {"type": "string", "minLength": 30},
+    "technical_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "modules", "constraints"],
+      "properties": {
+        "summary": {"type": "string"},
+        "modules": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "constraints": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "affected_paths": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "object", "required": ["id", "criterion"], "properties": {"id": {"type": "string"}, "criterion": {"type": "string"}}}
+    },
+    "test_scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "object", "required": ["id", "given", "when", "then"], "properties": {"id": {"type": "string"}, "given": {"type": "string"}, "when": {"type": "string"}, "then": {"type": "string"}}}
+    },
+    "blocked_by": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_-]*-[0-9]+$"}},
+    "estimate_points": {"type": "integer", "minimum": 1, "maximum": 5},
+    "risk": {"type": "object", "required": ["level", "reason"], "properties": {"level": {"enum": ["low", "medium", "high"]}, "reason": {"type": "string"}}},
+    "rollout": {"type": "object", "required": ["strategy", "kill_switch"], "properties": {"strategy": {"type": "string"}, "kill_switch": {"type": "string"}}},
+    "observability": {"type": "object", "required": ["events", "metrics"], "properties": {"events": {"type": "array", "items": {"type": "string"}}, "metrics": {"type": "array", "items": {"type": "string"}}}}
+  }
+}
