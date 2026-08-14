@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Iterable, Sequence
 import subprocess
-from typing import Protocol
+from typing import Protocol, cast
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,7 @@ class RunSpec:
 @dataclass(frozen=True)
 class RunHandle:
     run_id: str
-    process: subprocess.Popen[str]
+    runtime_ref: object
 
 
 @dataclass(frozen=True)
@@ -61,18 +61,20 @@ class CliAgentRuntime:
         return RunHandle(spec.run_id, process)
 
     def stream(self, handle: RunHandle) -> Iterable[AgentEvent]:
-        if handle.process.stdout is None:
+        process = cast(subprocess.Popen[str], handle.runtime_ref)
+        if process.stdout is None:
             raise RuntimeError("CLI runtime did not expose stdout")
         try:
-            for line in handle.process.stdout:
+            for line in process.stdout:
                 yield AgentEvent("runtime.output", {"line": line.rstrip("\n")})
         finally:
-            handle.process.stdout.close()
-        returncode = handle.process.wait()
+            process.stdout.close()
+        returncode = process.wait()
         yield AgentEvent("runtime.exited", {"returncode": returncode})
 
     def cancel(self, handle: RunHandle) -> AgentEvent:
-        if handle.process.poll() is None:
-            handle.process.terminate()
-            handle.process.wait()
-        return AgentEvent("runtime.cancelled", {"returncode": handle.process.returncode})
+        process = cast(subprocess.Popen[str], handle.runtime_ref)
+        if process.poll() is None:
+            process.terminate()
+            process.wait()
+        return AgentEvent("runtime.cancelled", {"returncode": process.returncode})
