@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 
@@ -16,6 +17,9 @@ class Workspace:
     base_revision: str
     initial_head_revision: str
     current_head_revision: str
+    work_item_id: str = ""
+    created_at: datetime | None = None
+    destroyed_at: datetime | None = None
 
 
 class WorkspaceDriftError(RuntimeError):
@@ -57,6 +61,8 @@ class GitWorkspaceFactory:
             base_revision=base_revision,
             initial_head_revision=initial_head,
             current_head_revision=initial_head,
+            work_item_id=workspace_id,
+            created_at=datetime.now(timezone.utc),
         )
 
     def inspect(self, workspace: Workspace) -> Workspace:
@@ -78,7 +84,16 @@ class GitWorkspaceFactory:
         if actual_branch != workspace.branch_ref:
             raise WorkspaceDriftError("workspace branch does not match its assignment")
         current_head = self._rev_parse(worktree_path)
+        if current_head != workspace.current_head_revision:
+            if self.is_ancestor(current_head, workspace.current_head_revision):
+                raise WorkspaceDriftError("workspace HEAD moved backwards unexpectedly")
+            if not self.is_ancestor(workspace.current_head_revision, current_head):
+                raise WorkspaceDriftError("workspace history diverged unexpectedly")
         return replace(workspace, current_head_revision=current_head)
+
+    def destroy(self, workspace: Workspace) -> Workspace:
+        self._git("worktree", "remove", "--force", workspace.worktree_path, cwd=self._repository)
+        return replace(workspace, destroyed_at=datetime.now(timezone.utc))
 
     def is_ancestor(self, base_revision: str, descendant_revision: str) -> bool:
         result = subprocess.run(

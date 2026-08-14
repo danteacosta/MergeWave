@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import re
 from typing import Iterable, Mapping
+
+
+class WorkItemState(StrEnum):
+    BLOCKED = "Blocked"
+    READY = "Ready"
+    IN_PROGRESS = "InProgress"
+    IN_REVIEW = "InReview"
+    NEEDS_ATTENTION = "NeedsAttention"
+    DONE = "Done"
+    CANCELLED = "Cancelled"
 
 
 @dataclass(frozen=True)
@@ -24,6 +35,18 @@ class WorkItemValidationError(ValueError):
 class WorkItem:
     item_id: str
     blocked_by: tuple[str, ...]
+    title: str = ""
+    description: str = ""
+    scope_in: tuple[str, ...] = ()
+    scope_out: tuple[str, ...] = ()
+    acceptance_criteria: tuple[Mapping[str, object], ...] = ()
+    test_scenarios: tuple[Mapping[str, object], ...] = ()
+    affected_paths: tuple[str, ...] = ()
+    risk_level: str = "low"
+    rollout_strategy: str | None = None
+    kill_switch: str | None = None
+    metrics: tuple[str, ...] = ()
+    state: WorkItemState = WorkItemState.READY
 
 
 class DependencyGraphError(ValueError):
@@ -65,6 +88,7 @@ def validate_work_item(raw: Mapping[str, object]) -> WorkItem:
         "risk",
         "rollout",
         "observability",
+        "state",
     )
     issues = [
         ValidationIssue("missing_field", field, f"required field is missing: {field}")
@@ -104,6 +128,10 @@ def validate_work_item(raw: Mapping[str, object]) -> WorkItem:
         if not isinstance(raw[field], str) or not raw[field].strip():
             issues.append(ValidationIssue("invalid_text", field, f"{field} must be non-empty text"))
 
+    state = raw["state"]
+    if not isinstance(state, str) or state not in {member.value for member in WorkItemState}:
+        issues.append(ValidationIssue("invalid_state", "state", "state must be a valid WorkItemState"))
+
     nested_requirements = {
         "scope": ("in", "out"),
         "technical_context": ("summary", "modules", "constraints"),
@@ -125,7 +153,27 @@ def validate_work_item(raw: Mapping[str, object]) -> WorkItem:
     if issues:
         raise WorkItemValidationError(tuple(issues))
 
-    return WorkItem(item_id=item_id, blocked_by=tuple(blocked_by))
+    risk = raw["risk"]
+    rollout = raw["rollout"]
+    observability = raw["observability"]
+    scope = raw["scope"]
+    technical_context = raw["technical_context"]
+    return WorkItem(
+        item_id=item_id,
+        blocked_by=tuple(blocked_by),
+        title=str(raw["title"]),
+        description=str(raw["problem"]),
+        scope_in=tuple(str(value) for value in scope["in"]),
+        scope_out=tuple(str(value) for value in scope["out"]),
+        acceptance_criteria=tuple(raw["acceptance_criteria"]),
+        test_scenarios=tuple(raw["test_scenarios"]),
+        affected_paths=tuple(str(value) for value in raw["affected_paths"]),
+        risk_level=str(risk["level"]),
+        rollout_strategy=str(rollout["strategy"]),
+        kill_switch=str(rollout["kill_switch"]),
+        metrics=tuple(str(value) for value in observability["metrics"]),
+        state=WorkItemState(state),
+    )
 
 
 def compile_dependency_graph(raw_items: Iterable[Mapping[str, object]]) -> DependencyGraph:

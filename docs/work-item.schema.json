@@ -4,7 +4,7 @@
   "title": "MergeWave Executable Work Item",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "title", "problem", "scope", "behavior", "technical_context", "affected_paths", "acceptance_criteria", "test_scenarios", "blocked_by", "estimate_points", "risk", "rollout", "observability"],
+  "required": ["id", "title", "problem", "scope", "behavior", "technical_context", "affected_paths", "acceptance_criteria", "test_scenarios", "blocked_by", "estimate_points", "risk", "rollout", "observability", "state"],
   "properties": {
     "id": {"type": "string", "pattern": "^[A-Z][A-Z0-9_-]*-[0-9]+$"},
     "title": {"type": "string", "minLength": 12},
@@ -45,5 +45,6 @@
     "risk": {"type": "object", "required": ["level", "reason"], "properties": {"level": {"enum": ["low", "medium", "high"]}, "reason": {"type": "string"}}},
     "rollout": {"type": "object", "required": ["strategy", "kill_switch"], "properties": {"strategy": {"type": "string"}, "kill_switch": {"type": "string"}}},
     "observability": {"type": "object", "required": ["events", "metrics"], "properties": {"events": {"type": "array", "items": {"type": "string"}}, "metrics": {"type": "array", "items": {"type": "string"}}}}
+    ,"state": {"enum": ["Blocked", "Ready", "InProgress", "InReview", "NeedsAttention", "Done", "Cancelled"]}
   }
 }

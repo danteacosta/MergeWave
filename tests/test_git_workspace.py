@@ -78,6 +78,34 @@ class GitWorkspaceFactoryTests(unittest.TestCase):
             with self.assertRaises(WorkspaceDriftError):
                 factory.inspect(workspace)
 
+    def test_reset_after_progress_is_workspace_drift_and_destroy_records_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repository = root / "repository"
+            repository.mkdir()
+            git("init", "-q", cwd=repository)
+            (repository / "README.md").write_text("initial\n")
+            git("add", "README.md", cwd=repository)
+            git("commit", "-qm", "initial", cwd=repository)
+            base_revision = git("rev-parse", "HEAD", cwd=repository)
+
+            factory = GitWorkspaceFactory(repository, root / "worktrees")
+            workspace = factory.create("CTRL-1", base_revision)
+            worktree = Path(workspace.worktree_path)
+            (worktree / "change.txt").write_text("change\n")
+            git("add", "change.txt", cwd=worktree)
+            git("commit", "-qm", "change", cwd=worktree)
+            progressed = factory.inspect(workspace)
+            git("reset", "--hard", base_revision, cwd=worktree)
+
+            with self.assertRaises(WorkspaceDriftError):
+                factory.inspect(progressed)
+
+            destroyed = factory.destroy(progressed)
+
+            self.assertIsNotNone(destroyed.destroyed_at)
+            self.assertFalse(worktree.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
