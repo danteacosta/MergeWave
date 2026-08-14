@@ -9,6 +9,11 @@ from .contracts import (
     compile_dependency_graph,
     validate_work_item,
 )
+from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
+from .persistence import EventRecord, SqliteEventLog
+from .reliability import Arp3Recorder
+from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec
+from .scheduler import Scheduler
 from .simulator import (
     DeliveryObservation,
     Dispatch,
@@ -21,15 +26,26 @@ from .simulator import (
 __all__ = [
     "DependencyGraph",
     "DependencyGraphError",
+    "AgentEvent",
+    "Arp3Recorder",
+    "CliAgentRuntime",
     "DeliveryObservation",
     "Dispatch",
     "Event",
+    "EventRecord",
     "FailureRecord",
     "GateDecision",
+    "GitWorkspaceFactory",
     "MergeWaveSimulator",
+    "RunHandle",
+    "RunSpec",
+    "Scheduler",
+    "SqliteEventLog",
     "ValidationIssue",
     "WorkItem",
     "WorkItemValidationError",
+    "Workspace",
+    "WorkspaceDriftError",
     "compile_dependency_graph",
     "validate_work_item",
 ]

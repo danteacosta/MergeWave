@@ -15,17 +15,30 @@ Agentic Delivery Control Plane specification.
 
 The executable Work Item contract is defined in
 [docs/work-item.schema.json](docs/work-item.schema.json).
+See [docs/work-item.example.json](docs/work-item.example.json) for a complete
+authoring example.
 
 ## Status
 
 Early development. The simulator and contract tests are the first acceptance
-gate. Linear, GitHub, ACP, CLI, and ARP 3.0 adapters will be added behind
-ports after the offline path is proven.
+gate. Linear, GitHub, and ACP adapters remain behind ports for the next slice;
+the generic CLI runtime and ARP 3.0 recorder are already available.
+
+The current offline slice includes:
+
+- Work Item validation and explicit DAG cycle detection;
+- `continuous_frontier` and `wave_barrier` scheduling;
+- SQLite event-log idempotency;
+- Git worktree creation, HEAD tracking, and ancestry checks;
+- generic CLI runtime fallback;
+- ARP 3.0 wire recording through an injected sink;
+- deterministic simulator trace and CLI demo.
 
 ## Development
 
 ```console
 PYTHONPATH=src python -m unittest discover -s tests -v
+PYTHONPATH=src python -m mergewave --demo
 ```
 
 ## License

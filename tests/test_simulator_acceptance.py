@@ -136,6 +136,18 @@ class MergeWaveSimulatorAcceptanceTests(unittest.TestCase):
         self.assertTrue(decision.failure.agent_guidance)
         self.assertTrue(decision.failure.suggested_action)
 
+    def test_fresh_observation_can_recover_a_stale_ci_gate(self) -> None:
+        simulator = MergeWaveSimulator(
+            work_items(), policy="continuous_frontier", base_revision="main-0"
+        )
+        simulator.dispatch_ready()
+        simulator.observe_delivery("A", replace(valid_delivery("A"), ci_head_sha="old-head"))
+        self.assertEqual(simulator.evaluate_gate("A").failure.code, "stale_ci")
+
+        simulator.observe_delivery("A", valid_delivery("A"))
+
+        self.assertEqual(simulator.evaluate_gate("A").status, "approved")
+
     def test_simulator_exposes_a_trace_of_delivery_decisions(self) -> None:
         simulator = MergeWaveSimulator(
             work_items(), policy="continuous_frontier", base_revision="main-0"

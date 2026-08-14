@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .contracts import DependencyGraph, WorkItem
+from .scheduler import Scheduler
+
 
 @dataclass(frozen=True)
 class DeliveryObservation:
@@ -71,37 +74,35 @@ class MergeWaveSimulator:
             raise ValueError(f"unsupported scheduling policy: {policy}")
 
         self._policy = policy
-        self._base_revision = base_revision
+        self._scheduler = Scheduler(
+            DependencyGraph(
+                {
+                    str(item["id"]): WorkItem(
+                        str(item["id"]),
+                        tuple(str(blocker) for blocker in item.get("blocked_by", [])),
+                    )
+                    for item in work_items
+                }
+            ),
+            policy=policy,
+            base_revision=base_revision,
+        )
         self._repository = repository
         self._workspace_root = workspace_root.rstrip("/")
-        self._blockers = {
-            str(item["id"]): frozenset(str(blocker) for blocker in item.get("blocked_by", []))
-            for item in work_items
-        }
         self._dispatched: dict[str, Dispatch] = {}
         self._observations: dict[str, DeliveryObservation] = {}
         self._decisions: dict[str, GateDecision] = {}
         self._claims: dict[str, str] = {}
         self._events: list[Event] = []
         self._active_wave: set[str] = set()
-        self._wave_released = True
 
     def dispatch_ready(self) -> tuple[Dispatch, ...]:
-        if self._policy == "wave_barrier" and not self._wave_released:
-            return ()
-
         ready = []
-        for item_id in self._blockers:
-            if item_id in self._dispatched:
-                continue
-            if not all(
-                self._decisions.get(blocker, GateDecision("pending")).status == "approved"
-                for blocker in self._blockers[item_id]
-            ):
-                continue
+        for scheduled in self._scheduler.dispatch_ready():
+            item_id = scheduled.work_item_id
             dispatch = Dispatch(
                 work_item_id=item_id,
-                base_revision=self._base_revision,
+                base_revision=scheduled.base_revision,
                 repository=self._repository,
                 worktree_path=f"{self._workspace_root}/{item_id}",
                 branch_ref=f"mergewave/{item_id}",
@@ -112,7 +113,6 @@ class MergeWaveSimulator:
 
         if self._policy == "wave_barrier" and ready:
             self._active_wave = {dispatch.work_item_id for dispatch in ready}
-            self._wave_released = False
 
         return tuple(ready)
 
@@ -126,6 +126,8 @@ class MergeWaveSimulator:
         if item_id not in self._dispatched:
             raise ValueError(f"item was not dispatched: {item_id}")
         self._observations[item_id] = observation
+        if self._decisions.get(item_id, GateDecision("pending")).status == "blocked":
+            self._decisions.pop(item_id)
         self._events.append(Event("delivery.observed", item_id))
 
     def evaluate_gate(self, item_id: str) -> GateDecision:
@@ -141,6 +143,8 @@ class MergeWaveSimulator:
         failure = self._classify(dispatch, observation)
         decision = GateDecision("blocked", failure) if failure else GateDecision("approved")
         self._decisions[item_id] = decision
+        if decision.status == "approved":
+            self._scheduler.release(item_id)
         self._events.append(Event("gate.decided", item_id))
         return decision
 
@@ -148,17 +152,16 @@ class MergeWaveSimulator:
         return tuple(self._events)
 
     def refresh_target_base(self, revision: str) -> None:
-        if self._policy != "wave_barrier":
-            self._base_revision = revision
-            return
-        if not self._active_wave or not all(
-            self._decisions.get(item_id, GateDecision("pending")).status == "approved"
-            for item_id in self._active_wave
+        if self._policy == "wave_barrier" and (
+            not self._active_wave
+            or not all(
+                self._decisions.get(item_id, GateDecision("pending")).status == "approved"
+                for item_id in self._active_wave
+            )
         ):
             raise ValueError("cannot refresh target base before the active wave is approved")
-        self._base_revision = revision
+        self._scheduler.refresh_target_base(revision)
         self._active_wave = set()
-        self._wave_released = True
         self._events.append(Event("reconciliation.target_base_refreshed"))
 
     def _classify(

@@ -10,6 +10,9 @@ requires-python = ">=3.11"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 
+[project.scripts]
+mergewave = "mergewave.__main__:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9",
