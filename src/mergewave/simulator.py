@@ -116,6 +116,18 @@ class MergeWaveSimulator:
 
         return tuple(ready)
 
+    def preview_ready(self) -> tuple[Dispatch, ...]:
+        return tuple(
+            Dispatch(
+                work_item_id=scheduled.work_item_id,
+                base_revision=scheduled.base_revision,
+                repository=self._repository,
+                worktree_path=f"{self._workspace_root}/{scheduled.work_item_id}",
+                branch_ref=f"mergewave/{scheduled.work_item_id}",
+            )
+            for scheduled in self._scheduler.preview_ready()
+        )
+
     def record_agent_claim(self, item_id: str, claim: str) -> None:
         self._claims[item_id] = claim
 

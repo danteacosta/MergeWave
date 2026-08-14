@@ -10,6 +10,7 @@ from .contracts import (
     validate_work_item,
 )
 from .acp_runtime import AcpAgentRuntime, AcpTransport
+from .controller import ActiveAssignment, DeliveryController
 from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
 from .linear_adapter import LinearGraphQLAdapter, LinearGraphQLTransport, UrllibLinearTransport
@@ -33,9 +34,11 @@ __all__ = [
     "AgentEvent",
     "AcpAgentRuntime",
     "AcpTransport",
+    "ActiveAssignment",
     "Arp3Recorder",
     "CliAgentRuntime",
     "DeliveryObservation",
+    "DeliveryController",
     "Dispatch",
     "Event",
     "EventRecord",

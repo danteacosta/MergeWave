@@ -36,6 +36,7 @@ The current offline slice includes:
 - Linear GraphQL tracker adapter with explicit blocker mapping;
 - GitHub delivery observer for PR, CI, review, scope, merge, and ancestry evidence;
 - ACP runtime adapter for model-neutral session/event transports;
+- delivery controller that composes scheduler, workspaces, runtime, tracker, and observer;
 - ARP 3.0 wire recording through an injected sink;
 - deterministic simulator trace and CLI demo.
 
