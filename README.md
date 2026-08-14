@@ -9,19 +9,37 @@ first milestone is an offline deterministic simulator proving dependency-aware
 waves, merge-gated release, and the distinction between normal commits,
 workspace drift, and base-revision ancestry failures.
 
-The project is based on the [Merge-Gated, Dependency-Aware Agentic Delivery
-Control Plane specification](docs/merge-gated-delivery-control-plane-spec.md).
+The project is based on the [MergeWave simulator-first design](docs/superpowers/specs/2026-08-14-mergewave-design.md), which implements the
+authority and workspace invariants from the Merge-Gated, Dependency-Aware
+Agentic Delivery Control Plane specification.
+
+The executable Work Item contract is defined in
+[docs/work-item.schema.json](docs/work-item.schema.json).
+See [docs/work-item.example.json](docs/work-item.example.json) for a complete
+authoring example.
 
 ## Status
 
 Early development. The simulator and contract tests are the first acceptance
-gate. Linear, GitHub, ACP, CLI, and ARP 3.0 adapters will be added behind
-ports after the offline path is proven.
+gate. Linear, GitHub, and ACP adapters remain behind ports for the next slice;
+the generic CLI runtime and ARP 3.0 recorder are already available.
+
+The current offline slice includes:
+
+- Work Item validation and explicit DAG cycle detection;
+- `continuous_frontier` and `wave_barrier` scheduling;
+- SQLite event-log idempotency;
+- idempotent reconciliation keyed by item and observed base revision;
+- Git worktree creation, HEAD tracking, and ancestry checks;
+- generic CLI runtime fallback;
+- ARP 3.0 wire recording through an injected sink;
+- deterministic simulator trace and CLI demo.
 
 ## Development
 
 ```console
-python -m unittest discover -s tests -v
+PYTHONPATH=src python -m unittest discover -s tests -v
+PYTHONPATH=src python -m mergewave --demo
 ```
 
 ## License

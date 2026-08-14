@@ -1,0 +1,63 @@
+{
+  "id": "CTRL-104",
+  "title": "Record stable failure reasons for blocked delivery items",
+  "problem": "Operators currently reconstruct blocked delivery state from scattered logs, which makes recovery slow and encourages unsafe blind retries.",
+  "scope": {
+    "in": [
+      "Add a stable failure code to blocking scheduler outcomes",
+      "Persist the reason in the event log",
+      "Expose the next action to the tracker and retrying agent"
+    ],
+    "out": [
+      "Build a dashboard",
+      "Infer failures from natural-language agent reports",
+      "Change provider-specific CI APIs"
+    ]
+  },
+  "behavior": "When an item cannot advance, MergeWave records a stable code, severity, retryability, evidence references, human explanation, and actionable next step. A blocking failure prevents dependent dispatch until reconciliation observes a safe new state.",
+  "technical_context": {
+    "summary": "The classifier consumes normalized external observations after workspace and delivery checks.",
+    "modules": ["scheduler", "gate evaluator", "event log"],
+    "constraints": [
+      "Do not put provider names in core failure codes",
+      "Do not treat agent self-report as authority",
+      "Keep repeated reconciliation idempotent"
+    ]
+  },
+  "affected_paths": [
+    "src/mergewave/scheduler.py",
+    "src/mergewave/persistence.py"
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-1",
+      "criterion": "A stale CI observation produces stale_ci and prevents release."
+    },
+    {
+      "id": "AC-2",
+      "criterion": "Every blocking failure contains a code, explanation, and suggested action."
+    }
+  ],
+  "test_scenarios": [
+    {
+      "id": "SC-1",
+      "given": "CI is green for an older pull-request head",
+      "when": "The delivery gate evaluates the current head",
+      "then": "The item remains blocked with stale_ci"
+    }
+  ],
+  "blocked_by": [],
+  "estimate_points": 3,
+  "risk": {
+    "level": "medium",
+    "reason": "Incorrect classification can delay delivery or allow an unsafe retry."
+  },
+  "rollout": {
+    "strategy": "Enable after the simulator contract tests pass.",
+    "kill_switch": "Fall back to blocking on unknown observations."
+  },
+  "observability": {
+    "events": ["delivery.failure_recorded", "delivery.dispatch_suppressed"],
+    "metrics": ["delivery.blocked_items_by_failure_code"]
+  }
+}
