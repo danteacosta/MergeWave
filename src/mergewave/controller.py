@@ -13,8 +13,8 @@ from .contracts import WorkItemState
 from .git_workspace import Workspace
 from .persistence import SqliteEventLog
 from .ports import BaseRevisionProvider, DeliveryObserver, ReliabilityRecorder, TrackerAdapter, WorkspaceFactory
-from .runtime import AgentRuntime, RunHandle, RunSpec
-from .simulator import DeliveryObservation, Dispatch, GateDecision, MergeWaveSimulator
+from .runtime import AgentEvent, AgentRuntime, RunHandle, RunSpec, classify_runtime_event
+from .simulator import DeliveryObservation, Dispatch, FailureRecord, GateDecision, MergeWaveSimulator
 
 
 @dataclass(frozen=True)
@@ -144,6 +144,31 @@ class DeliveryController:
 
     def pull_request(self, item_id: str) -> PullRequest:
         return self._pull_requests[item_id]
+
+    def observe_runtime_events(self, item_id: str, events: list[AgentEvent]) -> FailureRecord | None:
+        for event in events:
+            code = classify_runtime_event(event)
+            if code is None:
+                continue
+            failure = FailureRecord(
+                code,
+                "runtime",
+                "blocking",
+                code in {"agent_timeout", "runtime_failed"},
+                "The agent runtime did not complete successfully.",
+                "Do not treat the runtime claim as delivery evidence; inspect and retry the attempt.",
+                "Route the item to NeedsAttention and reconcile a new attempt after the workspace is safe.",
+            )
+            if item_id not in self._attention_state_published:
+                self._tracker.transition_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
+                self._attention_state_published.add(item_id)
+            self._append_event(
+                "runtime.failed",
+                {"item_id": item_id, "failure_code": code},
+                f"runtime-failure:{item_id}:{code}",
+            )
+            return failure
+        return None
 
     def _enrich_observation(self, item_id: str, observation: DeliveryObservation) -> DeliveryObservation:
         linked = observation.linked_to_ticket

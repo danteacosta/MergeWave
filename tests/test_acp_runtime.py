@@ -44,6 +44,17 @@ class AcpAgentRuntimeTests(unittest.TestCase):
         self.assertEqual(transport.requests[0][0], "session/start")
         self.assertEqual(transport.requests[0][1]["work_item_id"], "CTRL-1")
 
+    def test_runtime_supports_continue_and_reports_capabilities(self) -> None:
+        transport = FakeAcpTransport()
+        runtime = AcpAgentRuntime(transport)
+        handle = runtime.start(RunSpec("run-1", "CTRL-1", "Implement it", "."))
+
+        runtime.continue_run(handle, "Keep going")
+
+        self.assertTrue(runtime.capabilities().supports_continue)
+        self.assertEqual(transport.requests[-1][0], "session/continue")
+        self.assertEqual(transport.requests[-1][1]["input"], "Keep going")
+
     def test_start_rejects_a_response_without_a_session_id(self) -> None:
         class InvalidTransport(FakeAcpTransport):
             def request(self, method: str, params: dict[str, object]) -> object:

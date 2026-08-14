@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import itertools
+import json
+import subprocess
 from typing import Protocol
 
-from .runtime import AgentEvent, RunHandle, RunSpec
+from .runtime import AgentEvent, RunHandle, RunSpec, RuntimeCapabilities
 
 
 class AcpTransport(Protocol):
@@ -17,8 +20,9 @@ class AcpTransport(Protocol):
 class AcpAgentRuntime:
     """Map a generic request/event transport onto MergeWave's AgentRuntime port."""
 
-    def __init__(self, transport: AcpTransport) -> None:
+    def __init__(self, transport: AcpTransport, *, capabilities: RuntimeCapabilities | None = None) -> None:
         self._transport = transport
+        self._capabilities = capabilities or RuntimeCapabilities(True, True, True, ("acp",))
 
     def start(self, spec: RunSpec) -> RunHandle:
         response = self._transport.request(
@@ -46,11 +50,91 @@ class AcpAgentRuntime:
                 payload = {"value": event}
             yield AgentEvent(kind, payload)
 
+    def continue_run(self, handle: RunHandle, input: str) -> None:
+        if not isinstance(handle.runtime_ref, str):
+            raise RuntimeError("ACP run handle does not contain a session_id")
+        self._transport.request(
+            "session/continue",
+            {"session_id": handle.runtime_ref, "input": input},
+        )
+
     def cancel(self, handle: RunHandle) -> AgentEvent:
         if not isinstance(handle.runtime_ref, str):
             raise RuntimeError("ACP run handle does not contain a session_id")
         self._transport.request("session/cancel", {"session_id": handle.runtime_ref})
         return AgentEvent("runtime.cancelled", {"session_id": handle.runtime_ref})
 
+    def capabilities(self) -> RuntimeCapabilities:
+        return self._capabilities
 
-__all__ = ["AcpAgentRuntime", "AcpTransport"]
+
+class StdioAcpTransport:
+    """Minimal JSON-RPC-over-stdio transport for ACP-style providers.
+
+    Provider-specific session semantics remain in the server; this class only
+    owns process lifecycle and request/event framing.
+    """
+
+    def __init__(self, command: tuple[str, ...], *, cwd: str | None = None) -> None:
+        if not command:
+            raise ValueError("ACP command cannot be empty")
+        self._process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        if self._process.stdin is None or self._process.stdout is None:
+            raise RuntimeError("ACP process did not expose stdio")
+        self._ids = itertools.count(1)
+
+    def request(self, method: str, params: dict[str, object]) -> object:
+        request_id = next(self._ids)
+        self._write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        while True:
+            message = self._read()
+            if message.get("id") != request_id:
+                continue
+            if "error" in message:
+                raise RuntimeError(f"ACP request failed: {message['error']}")
+            return message.get("result", {})
+
+    def events(self, session_id: str) -> Iterable[object]:
+        while True:
+            message = self._read()
+            if message.get("method"):
+                params = message.get("params", {})
+                if isinstance(params, Mapping):
+                    yield dict(params)
+                else:
+                    yield params
+                continue
+            result = message.get("result")
+            if isinstance(result, Mapping) and result.get("session_id") == session_id:
+                yield dict(result)
+
+    def close(self) -> None:
+        if self._process.poll() is None:
+            self._process.terminate()
+        self._process.wait()
+
+    def _write(self, message: dict[str, object]) -> None:
+        assert self._process.stdin is not None
+        self._process.stdin.write(json.dumps(message) + "\n")
+        self._process.stdin.flush()
+
+    def _read(self) -> dict[str, object]:
+        assert self._process.stdout is not None
+        line = self._process.stdout.readline()
+        if not line:
+            raise RuntimeError("ACP process ended before sending a response")
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            raise RuntimeError("ACP message must be a JSON object")
+        return value
+
+
+__all__ = ["AcpAgentRuntime", "AcpTransport", "StdioAcpTransport"]
