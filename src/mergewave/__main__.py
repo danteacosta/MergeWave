@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 
+from .smoke import SmokeConfigurationError, github_read_only_smoke, linear_read_only_smoke
 from .simulator import MergeWaveSimulator
 
 
@@ -34,10 +37,37 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mergewave")
     parser.add_argument("--version", action="version", version="0.1.0")
     parser.add_argument("--demo", action="store_true", help="run the offline frontier demo")
+    parser.add_argument("--linear-smoke", action="store_true", help="run a read-only Linear API smoke check")
+    parser.add_argument("--github-smoke", action="store_true", help="run a read-only GitHub API smoke check")
     args = parser.parse_args(argv)
-    if not args.demo:
-        parser.error("--demo is required for the offline simulator")
-    print(json.dumps(_demo(), sort_keys=True))
+    modes = sum((args.demo, args.linear_smoke, args.github_smoke))
+    if modes != 1:
+        parser.error("choose exactly one of --demo, --linear-smoke, or --github-smoke")
+    try:
+        if args.demo:
+            result = _demo()
+        elif args.linear_smoke:
+            result = linear_read_only_smoke(
+                os.environ.get("MERGEWAVE_LINEAR_API_KEY", ""),
+                os.environ.get("MERGEWAVE_LINEAR_TEAM_ID", ""),
+            )
+        else:
+            result = github_read_only_smoke(
+                os.environ.get("MERGEWAVE_GITHUB_TOKEN", ""),
+                os.environ.get("MERGEWAVE_GITHUB_REPOSITORY", ""),
+                item_id=os.environ.get("MERGEWAVE_GITHUB_ITEM_ID", ""),
+                branch_ref=os.environ.get("MERGEWAVE_GITHUB_BRANCH", ""),
+                base_revision=os.environ.get("MERGEWAVE_GITHUB_BASE_REVISION", ""),
+                scope_paths=tuple(
+                    path.strip()
+                    for path in os.environ.get("MERGEWAVE_GITHUB_SCOPE_PATHS", "").split(",")
+                    if path.strip()
+                ),
+            )
+    except SmokeConfigurationError as error:
+        print(json.dumps({"error": "configuration", "message": str(error)}), file=sys.stderr)
+        return 2
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 

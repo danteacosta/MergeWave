@@ -19,6 +19,7 @@ from .reliability import Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec
 from .scheduler import Scheduler
+from .smoke import SmokeConfigurationError, github_read_only_smoke, linear_read_only_smoke
 from .simulator import (
     DeliveryObservation,
     Dispatch,
@@ -55,6 +56,7 @@ __all__ = [
     "ReconciliationLoop",
     "ReconciliationResult",
     "Scheduler",
+    "SmokeConfigurationError",
     "SqliteEventLog",
     "ValidationIssue",
     "WorkItem",
@@ -64,5 +66,7 @@ __all__ = [
     "UrllibGitHubTransport",
     "UrllibLinearTransport",
     "compile_dependency_graph",
+    "github_read_only_smoke",
+    "linear_read_only_smoke",
     "validate_work_item",
 ]
