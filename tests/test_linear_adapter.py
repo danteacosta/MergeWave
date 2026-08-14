@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from mergewave.linear_adapter import LinearGraphQLAdapter
+from mergewave.linear_adapter import LinearGraphQLAdapter, UrllibLinearTransport
 
 
 class FakeLinearTransport:
@@ -16,6 +17,23 @@ class FakeLinearTransport:
 
 
 class LinearGraphQLAdapterTests(unittest.TestCase):
+    def test_personal_api_key_is_sent_without_bearer_prefix(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
+            def read(self) -> bytes:
+                return b'{"data": {}}'
+
+        with patch("mergewave.linear_adapter.urlopen", return_value=FakeResponse()) as open_url:
+            UrllibLinearTransport("lin_api_key").execute("query { viewer { id } }", {})
+
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "lin_api_key")
+
     def test_fetch_candidates_maps_issue_contract_and_inverse_blockers(self) -> None:
         transport = FakeLinearTransport(
             [

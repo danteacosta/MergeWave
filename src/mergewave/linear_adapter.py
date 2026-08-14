@@ -18,7 +18,7 @@ class UrllibLinearTransport:
         token: str,
         *,
         api_url: str = "https://api.linear.app/graphql",
-        authorization_scheme: str = "Bearer",
+        authorization_scheme: str = "",
     ) -> None:
         self._token = token
         self._api_url = api_url
