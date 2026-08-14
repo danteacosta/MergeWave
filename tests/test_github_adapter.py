@@ -26,8 +26,11 @@ class GitHubDeliveryObserverTests(unittest.TestCase):
                     {
                         "number": 7,
                         "head": {"sha": "head-1", "ref": branch},
+                        "html_url": "https://github.com/acme/demo/pull/7",
+                        "base": {"sha": "main-0"},
                         "merged_at": "2026-08-14T20:00:00Z",
                         "merge_commit_sha": "main-1",
+                        "merged_by": {"login": "maintainer"},
                     }
                 ],
                 f"GET /repos/{repository}/commits/head-1/check-runs": {
@@ -67,6 +70,42 @@ class GitHubDeliveryObserverTests(unittest.TestCase):
         self.assertTrue(observation.merged)
         self.assertEqual(observation.merge_revision, "main-1")
         self.assertTrue(observation.base_is_ancestor)
+        self.assertEqual(observation.pr_id, "7")
+        self.assertEqual(observation.pr_url, "https://github.com/acme/demo/pull/7")
+        self.assertEqual(observation.base_sha_at_open, "main-0")
+        self.assertTrue(observation.reviews_resolved)
+        self.assertEqual(observation.merged_by, "maintainer")
+
+    def test_requested_changes_are_not_resolved_reviews(self) -> None:
+        repository = "acme/demo"
+        branch = "mergewave/CTRL-3"
+        transport = FakeGitHubTransport(
+            {
+                f"GET /repos/{repository}/pulls?head={branch}&state=all": [
+                    {"number": 8, "head": {"sha": "head-8"}, "merged_at": None}
+                ],
+                f"GET /repos/{repository}/commits/head-8/check-runs": {
+                    "check_runs": [{"head_sha": "head-8", "conclusion": "success"}]
+                },
+                f"GET /repos/{repository}/pulls/8/reviews": [
+                    {"user": {"login": "reviewer"}, "state": "APPROVED"},
+                    {"user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED"},
+                ],
+                f"GET /repos/{repository}/pulls/8/files": [],
+                f"GET /repos/{repository}/compare/main-0...head-8": {"status": "ahead"},
+            }
+        )
+        workspace = Workspace(
+            workspace_id="CTRL-3", repository="demo-repository", worktree_path="/worktrees/CTRL-3",
+            branch_ref=branch, base_revision="main-0", initial_head_revision="main-0", current_head_revision="head-8",
+        )
+
+        observation = GitHubDeliveryObserver(
+            repository=repository, transport=transport, scope_paths={"CTRL-3": ()}
+        ).observe("CTRL-3", workspace)
+
+        self.assertEqual(observation.approvals, 0)
+        self.assertFalse(observation.reviews_resolved)
 
     def test_missing_pull_request_is_explicitly_unmerged(self) -> None:
         repository = "acme/demo"

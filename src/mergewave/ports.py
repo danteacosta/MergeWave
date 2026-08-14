@@ -10,6 +10,10 @@ from .git_workspace import Workspace
 from .simulator import DeliveryObservation
 
 
+class BaseRevisionProvider(Protocol):
+    def current_revision(self) -> str: ...
+
+
 class TrackerAdapter(Protocol):
     def fetch_candidates(self) -> Sequence[dict[str, object]]: ...
 
@@ -18,6 +22,10 @@ class TrackerAdapter(Protocol):
     def link_pull_request(self, item_id: str, url: str) -> None: ...
 
     def post_comment(self, item_id: str, body: str) -> None: ...
+
+    def pull_request_linked(self, item_id: str, url: str) -> bool: ...
+
+    def acceptance_criteria_signal(self, item_id: str) -> str: ...
 
 
 class WorkspaceFactory(Protocol):
@@ -45,6 +53,7 @@ class ReliabilityRecorder(Protocol):
 __all__ = [
     "AgentEvent",
     "AgentRuntime",
+    "BaseRevisionProvider",
     "DeliveryObserver",
     "ReliabilityRecorder",
     "RunHandle",

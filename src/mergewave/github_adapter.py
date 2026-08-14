@@ -43,10 +43,16 @@ class GitHubDeliveryObserver:
         repository: str,
         transport: GitHubTransport,
         scope_paths: Mapping[str, Sequence[str]],
+        required_approvals: int = 1,
+        required_reviewers: Sequence[str] = (),
     ) -> None:
+        if required_approvals < 1:
+            raise ValueError("required_approvals must be positive")
         self._repository = repository
         self._transport = transport
         self._scope_paths = scope_paths
+        self._required_approvals = required_approvals
+        self._required_reviewers = frozenset(required_reviewers)
 
     def observe(self, item_id: str, workspace: Workspace) -> DeliveryObservation:
         pull_requests = self._get(
@@ -80,11 +86,23 @@ class GitHubDeliveryObserver:
             run.get("conclusion") == "success" for run in check_runs
         )
         reviews = self._get(f"/repos/{self._repository}/pulls/{number}/reviews")
+        latest_review_by_reviewer: dict[str, str] = {}
+        if isinstance(reviews, list):
+            for review in reviews:
+                if not isinstance(review, dict):
+                    continue
+                reviewer = review.get("user", {}).get("login")
+                state = review.get("state")
+                if isinstance(reviewer, str) and isinstance(state, str):
+                    latest_review_by_reviewer[reviewer] = state
         approved_reviewers = {
-            review.get("user", {}).get("login")
-            for review in reviews
-            if review.get("state") == "APPROVED"
-        } if isinstance(reviews, list) else set()
+            reviewer for reviewer, state in latest_review_by_reviewer.items() if state == "APPROVED"
+        }
+        reviews_resolved = (
+            not any(state == "CHANGES_REQUESTED" for state in latest_review_by_reviewer.values())
+            and len(approved_reviewers) >= self._required_approvals
+            and self._required_reviewers.issubset(approved_reviewers)
+        )
         files = self._get(f"/repos/{self._repository}/pulls/{number}/files")
         declared_paths = tuple(self._scope_paths.get(item_id, ()))
         scope_ok = isinstance(files, list) and all(
@@ -110,6 +128,11 @@ class GitHubDeliveryObserver:
             merged=pull_request.get("merged_at") is not None,
             merge_revision=pull_request.get("merge_commit_sha"),
             base_is_ancestor=status in {"ahead", "identical"},
+            pr_id=str(pull_request.get("number", "")),
+            pr_url=str(pull_request.get("html_url", pull_request.get("url", ""))),
+            base_sha_at_open=str(pull_request.get("base", {}).get("sha", "")),
+            reviews_resolved=reviews_resolved,
+            merged_by=(pull_request.get("merged_by", {}) or {}).get("login"),
         )
 
     def _get(self, path: str) -> object:
