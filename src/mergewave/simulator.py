@@ -36,6 +36,8 @@ class DeliveryObservation:
     approval_reviewers: tuple[str, ...] = ()
     changes_requested: bool = False
     required_reviewers_satisfied: bool | None = None
+    ci_pending: bool = False
+    merge_revision_in_target: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,7 @@ class Dispatch:
     repository: str
     worktree_path: str
     branch_ref: str
+    attempt_number: int = 1
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,7 @@ class MergeWaveSimulator:
         repository: str = "demo-repository",
         workspace_root: str = "/worktrees",
         review_policy: ReviewPolicy | None = None,
+        completed_item_ids: tuple[str, ...] = (),
     ) -> None:
         if policy not in {"continuous_frontier", "wave_barrier"}:
             raise ValueError(f"unsupported scheduling policy: {policy}")
@@ -129,6 +133,7 @@ class MergeWaveSimulator:
             ),
             policy=policy,
             base_revision=base_revision,
+            completed_item_ids=completed_item_ids,
         )
         self._repository = repository
         self._workspace_root = workspace_root.rstrip("/")
@@ -139,17 +144,21 @@ class MergeWaveSimulator:
         self._claims: dict[str, str] = {}
         self._events: list[Event] = []
         self._active_wave: set[str] = set()
+        self._attempt_numbers: dict[str, int] = {}
 
     def dispatch_ready(self) -> tuple[Dispatch, ...]:
         ready = []
         for scheduled in self._scheduler.dispatch_ready():
             item_id = scheduled.work_item_id
+            attempt_number = self._attempt_numbers.get(item_id, 1)
+            workspace_key = item_id if attempt_number == 1 else f"{item_id}-attempt-{attempt_number}"
             dispatch = Dispatch(
                 work_item_id=item_id,
                 base_revision=scheduled.base_revision,
                 repository=self._repository,
-                worktree_path=f"{self._workspace_root}/{item_id}",
-                branch_ref=f"mergewave/{item_id}",
+                worktree_path=f"{self._workspace_root}/{workspace_key}",
+                branch_ref=f"mergewave/{workspace_key}",
+                attempt_number=attempt_number,
             )
             self._dispatched[item_id] = dispatch
             self._events.append(Event("dispatch.created", item_id))
@@ -166,8 +175,9 @@ class MergeWaveSimulator:
                 work_item_id=scheduled.work_item_id,
                 base_revision=scheduled.base_revision,
                 repository=self._repository,
-                worktree_path=f"{self._workspace_root}/{scheduled.work_item_id}",
-                branch_ref=f"mergewave/{scheduled.work_item_id}",
+                worktree_path=f"{self._workspace_root}/{self._workspace_key(scheduled.work_item_id)}",
+                branch_ref=f"mergewave/{self._workspace_key(scheduled.work_item_id)}",
+                attempt_number=self._attempt_numbers.get(scheduled.work_item_id, 1),
             )
             for scheduled in self._scheduler.preview_ready()
         )
@@ -182,7 +192,8 @@ class MergeWaveSimulator:
         if item_id not in self._dispatched:
             raise ValueError(f"item was not dispatched: {item_id}")
         self._observations[item_id] = observation
-        if self._decisions.get(item_id, GateDecision("pending")).status == "blocked":
+        existing = self._decisions.get(item_id)
+        if existing is not None and existing.status in {"blocked", "pending"}:
             self._decisions.pop(item_id)
         self._events.append(Event("delivery.observed", item_id))
 
@@ -198,7 +209,9 @@ class MergeWaveSimulator:
         dispatch = self._dispatched[item_id]
         failure = self._classify(dispatch, observation)
         warnings = self._warnings(observation)
-        decision = GateDecision("blocked", failure, warnings) if failure else GateDecision("approved", warnings=warnings)
+        pending_codes = {"ci_pending", "stale_ci", "review_pending", "merge_not_observed"}
+        status = "pending" if failure and failure.code in pending_codes else "blocked"
+        decision = GateDecision(status, failure, warnings) if failure else GateDecision("approved", warnings=warnings)
         self._decisions[item_id] = decision
         if decision.status == "approved":
             self._scheduler.release(item_id)
@@ -234,6 +247,48 @@ class MergeWaveSimulator:
         self._scheduler.refresh_target_base(revision)
         self._active_wave = set()
         self._events.append(Event("reconciliation.target_base_refreshed"))
+
+    def retry_item(self, item_id: str) -> None:
+        self._scheduler.retry(item_id)
+        self._dispatched.pop(item_id, None)
+        self._observations.pop(item_id, None)
+        self._decisions.pop(item_id, None)
+        self._claims.pop(item_id, None)
+        self._active_wave.discard(item_id)
+        self._attempt_numbers[item_id] = self._attempt_numbers.get(item_id, 1) + 1
+        self._events.append(Event("attempt.superseded", item_id))
+
+    def cancel_from_wave(self, item_id: str, reason: str) -> None:
+        if not reason.strip():
+            raise ValueError("cancellation reason is required")
+        self._scheduler.cancel(item_id)
+        self._dispatched.pop(item_id, None)
+        self._observations.pop(item_id, None)
+        self._decisions.pop(item_id, None)
+        self._claims.pop(item_id, None)
+        self._active_wave.discard(item_id)
+        self._events.append(Event("wave.item_cancelled", item_id))
+
+    def restore_dispatch(self, dispatch: Dispatch, *, active_wave: bool = False) -> None:
+        """Restore an active dispatch represented in the durable event log."""
+        self._dispatched[dispatch.work_item_id] = dispatch
+        self._scheduler.restore_dispatched(
+            (dispatch.work_item_id,),
+            active_wave=(dispatch.work_item_id,) if active_wave else (),
+        )
+        if active_wave:
+            self._active_wave.add(dispatch.work_item_id)
+
+    def restore_execution_wave(self, wave: ExecutionWave) -> None:
+        self._scheduler.restore_wave(wave)
+        self._active_wave = set(wave.work_item_ids) if wave.state == "active" else set()
+
+    def restore_released(self, item_ids: tuple[str, ...]) -> None:
+        self._scheduler.restore_released(item_ids)
+
+    def _workspace_key(self, item_id: str) -> str:
+        attempt_number = self._attempt_numbers.get(item_id, 1)
+        return item_id if attempt_number == 1 else f"{item_id}-attempt-{attempt_number}"
 
     def _classify(
         self,
@@ -283,6 +338,16 @@ class MergeWaveSimulator:
                 "No pull request linked to the dispatched work was observed.",
                 "Create or link the pull request before requesting delivery verification.",
                 "Refresh pull-request observation and keep the item blocked until it exists.",
+            )
+        if observation.ci_pending:
+            return FailureRecord(
+                "ci_pending",
+                "ci",
+                "blocking",
+                True,
+                "CI is still running for the current pull-request head.",
+                "Wait for the current pull-request checks to complete before requesting release.",
+                "Reconcile again when the CI checks have completed.",
             )
         if observation.ci_head_sha != observation.pr_head_sha:
             return FailureRecord(
@@ -354,6 +419,16 @@ class MergeWaveSimulator:
                 "The pull request has not been observed in the target base branch.",
                 "Do not claim release until the human merge is visible in the target branch.",
                 "Wait for the merge and reconcile the target base revision.",
+            )
+        if observation.merge_revision_in_target is False:
+            return FailureRecord(
+                "merge_revision_not_in_target",
+                "merge",
+                "blocking",
+                True,
+                "The reported merge commit is not contained in the fetched target branch.",
+                "Do not release dependents until origin/main contains the observed merge revision.",
+                "Fetch the target branch again and verify the merge revision ancestry.",
             )
         return None
 

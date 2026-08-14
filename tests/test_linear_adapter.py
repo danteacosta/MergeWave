@@ -123,6 +123,7 @@ class LinearGraphQLAdapterTests(unittest.TestCase):
     def test_tracker_mutations_transition_link_and_comment(self) -> None:
         transport = FakeLinearTransport(
             [
+                {"data": {"team": {"states": {"nodes": [{"id": "state-progress", "name": "InProgress"}]}}}},
                 {"data": {"issueUpdate": {"success": True}}},
                 {"data": {"attachmentCreate": {"success": True}}},
                 {"data": {"commentCreate": {"success": True}}},
@@ -130,16 +131,27 @@ class LinearGraphQLAdapterTests(unittest.TestCase):
         )
         adapter = LinearGraphQLAdapter(transport, team_id="team-1")
 
-        adapter.transition_state("CTRL-1", "state-progress")
+        adapter.transition_state("CTRL-1", "InProgress")
         adapter.link_pull_request("CTRL-1", "https://github.com/acme/demo/pull/1")
         adapter.post_comment("CTRL-1", "CI passed")
 
-        self.assertEqual(len(transport.calls), 3)
-        self.assertIn("issueUpdate", transport.calls[0][0])
-        self.assertEqual(transport.calls[0][1], {"issue_id": "CTRL-1", "state_id": "state-progress"})
-        self.assertIn("attachmentCreate", transport.calls[1][0])
-        self.assertEqual(transport.calls[1][1]["issue_id"], "CTRL-1")
-        self.assertIn("commentCreate", transport.calls[2][0])
+        self.assertEqual(len(transport.calls), 4)
+        self.assertIn("MergeWaveTeamWorkflowStates", transport.calls[0][0])
+        self.assertIn("issueUpdate", transport.calls[1][0])
+        self.assertEqual(transport.calls[1][1], {"issue_id": "CTRL-1", "state_id": "state-progress"})
+        self.assertIn("attachmentCreate", transport.calls[2][0])
+        self.assertEqual(transport.calls[2][1]["issue_id"], "CTRL-1")
+        self.assertIn("commentCreate", transport.calls[3][0])
+
+    def test_transition_resolves_linear_state_name_to_state_id(self) -> None:
+        transport = FakeLinearTransport(
+            [{"data": {"team": {"states": {"nodes": [{"id": "state-review", "name": "InReview"}]}}}}, {"data": {"issueUpdate": {"success": True}}}]
+        )
+        adapter = LinearGraphQLAdapter(transport, team_id="team-1")
+
+        adapter.transition_state("CTRL-1", "InReview")
+
+        self.assertEqual(transport.calls[-1][1], {"issue_id": "CTRL-1", "state_id": "state-review"})
 
     def test_graphql_errors_are_not_silently_treated_as_empty_data(self) -> None:
         transport = FakeLinearTransport([{"errors": [{"message": "forbidden"}]}])

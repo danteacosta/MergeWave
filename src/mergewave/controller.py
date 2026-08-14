@@ -31,16 +31,32 @@ class ControllerProjection:
     base_revision: str | None
     attempt_states: Mapping[str, str]
     wave_states: Mapping[str, str]
+    attempt_records: Mapping[str, Mapping[str, object]]
+    active_assignments: Mapping[str, Mapping[str, object]]
+    gate_states: Mapping[str, str]
+    wave_records: Mapping[str, Mapping[str, object]]
+    evidence_records: Mapping[str, Mapping[str, object]]
+    pull_requests: Mapping[str, Mapping[str, object]]
 
     @classmethod
     def from_event_log(cls, event_log: SqliteEventLog) -> "ControllerProjection":
-        initial = {"ticket_states": {}, "base_revision": None, "attempt_states": {}, "wave_states": {}}
+        initial = {
+            "ticket_states": {}, "base_revision": None, "attempt_states": {}, "wave_states": {},
+            "attempt_records": {}, "active_assignments": {}, "gate_states": {},
+            "wave_records": {}, "evidence_records": {}, "pull_requests": {},
+        }
         reduced = event_log.reduce(initial, cls._reduce)
         return cls(
             ticket_states=reduced["ticket_states"],
             base_revision=reduced["base_revision"],
             attempt_states=reduced["attempt_states"],
             wave_states=reduced["wave_states"],
+            attempt_records=reduced["attempt_records"],
+            active_assignments=reduced["active_assignments"],
+            gate_states=reduced["gate_states"],
+            wave_records=reduced["wave_records"],
+            evidence_records=reduced["evidence_records"],
+            pull_requests=reduced["pull_requests"],
         )
 
     @staticmethod
@@ -51,6 +67,12 @@ class ControllerProjection:
             "base_revision": state["base_revision"],
             "attempt_states": dict(state["attempt_states"]),
             "wave_states": dict(state["wave_states"]),
+            "attempt_records": dict(state["attempt_records"]),
+            "active_assignments": dict(state["active_assignments"]),
+            "gate_states": dict(state["gate_states"]),
+            "wave_records": dict(state["wave_records"]),
+            "evidence_records": dict(state["evidence_records"]),
+            "pull_requests": dict(state["pull_requests"]),
         }
         if event.kind == "ticket.state_changed":
             next_state["ticket_states"][payload["item_id"]] = payload["state"]
@@ -58,12 +80,32 @@ class ControllerProjection:
             next_state["base_revision"] = payload["revision"]
         elif event.kind == "work_attempt.started":
             next_state["attempt_states"][payload["run_id"]] = "running"
+            next_state["attempt_records"][payload["run_id"]] = dict(payload)
+            if payload.get("item_id"):
+                next_state["active_assignments"][payload["item_id"]] = dict(payload)
         elif event.kind == "work_attempt.state_changed":
             next_state["attempt_states"][payload["run_id"]] = payload["state"]
+            record = dict(next_state["attempt_records"].get(payload["run_id"], {}))
+            record["state"] = payload["state"]
+            next_state["attempt_records"][payload["run_id"]] = record
+            if payload["state"] in {"released", "cancelled", "superseded"}:
+                item_id = record.get("item_id")
+                if item_id:
+                    next_state["active_assignments"].pop(item_id, None)
         elif event.kind == "execution_wave.started":
             next_state["wave_states"][payload["wave_id"]] = "active"
+            next_state["wave_records"][payload["wave_id"]] = dict(payload)
         elif event.kind == "execution_wave.state_changed":
             next_state["wave_states"][payload["wave_id"]] = payload["state"]
+            record = dict(next_state["wave_records"].get(payload["wave_id"], {}))
+            record["state"] = payload["state"]
+            next_state["wave_records"][payload["wave_id"]] = record
+        elif event.kind == "gate.decided":
+            next_state["gate_states"][payload["item_id"]] = payload["status"]
+        elif event.kind == "validation.evidence_recorded":
+            next_state["evidence_records"][payload["item_id"]] = dict(payload["evidence"])
+            if payload.get("pull_request"):
+                next_state["pull_requests"][payload["item_id"]] = dict(payload["pull_request"])
         return next_state
 
 
@@ -107,7 +149,15 @@ class DeliveryController:
         self._attention_state_published: set[str] = set()
         self._done_state_published: set[str] = set()
         self._attempts: dict[str, WorkAttempt] = {}
+        self._attempt_history: dict[str, list[WorkAttempt]] = {}
         self._waves: dict[str, ExecutionWave] = {}
+
+    @classmethod
+    def from_event_log(cls, *, event_log: SqliteEventLog, **kwargs: object) -> "DeliveryController":
+        """Rehydrate controller-owned state while keeping delivery verification external."""
+        controller = cls(event_log=event_log, **kwargs)
+        controller._rehydrate(ControllerProjection.from_event_log(event_log))
+        return controller
 
     def dispatch_ready(self, prompts: Mapping[str, str]) -> tuple[Dispatch, ...]:
         dispatches = self._simulator.preview_ready()
@@ -120,23 +170,29 @@ class DeliveryController:
         dispatches = self._simulator.dispatch_ready()
 
         for dispatch in dispatches:
+            workspace_key = dispatch.work_item_id if dispatch.attempt_number == 1 else f"{dispatch.work_item_id}-attempt-{dispatch.attempt_number}"
             workspace = self._workspace_factory.create(
-                dispatch.work_item_id,
+                workspace_key,
                 dispatch.base_revision,
             )
             self._set_ticket_state(dispatch.work_item_id, WorkItemState.IN_PROGRESS.value)
+            run_id = f"{dispatch.work_item_id}:{dispatch.base_revision}"
+            if dispatch.attempt_number > 1:
+                run_id = f"{run_id}:attempt-{dispatch.attempt_number}"
+            previous_attempt = self._attempts.get(dispatch.work_item_id)
             attempt = WorkAttempt(
-                id=f"attempt:{dispatch.work_item_id}:{dispatch.base_revision}",
+                id=f"attempt:{run_id}",
                 work_item_id=dispatch.work_item_id,
                 base_sha=dispatch.base_revision,
                 workspace_id=workspace.workspace_id,
                 agent_runtime=type(self._runtime).__qualname__,
                 started_at=workspace.created_at or datetime.now(timezone.utc),
                 state="running",
+                supersedes_attempt_id=previous_attempt.id if previous_attempt else None,
             )
             handle = self._runtime.start(
                 RunSpec(
-                    run_id=f"{dispatch.work_item_id}:{dispatch.base_revision}",
+                    run_id=run_id,
                     work_item_id=dispatch.work_item_id,
                     prompt=prompts[dispatch.work_item_id],
                     workspace_path=workspace.worktree_path,
@@ -144,6 +200,8 @@ class DeliveryController:
                     workspace=workspace,
                 )
             )
+            if previous_attempt is not None:
+                self._attempt_history.setdefault(dispatch.work_item_id, []).append(previous_attempt)
             self._attempts[dispatch.work_item_id] = attempt
             self._active[dispatch.work_item_id] = ActiveAssignment(dispatch, workspace, handle, attempt)
             self._record_run_and_gate_request(dispatch, workspace, prompts[dispatch.work_item_id], handle)
@@ -154,7 +212,13 @@ class DeliveryController:
                     "run_id": handle.run_id,
                     "attempt_id": attempt.id,
                     "workspace_id": workspace.workspace_id,
+                    "repository": workspace.repository,
+                    "worktree_path": workspace.worktree_path,
+                    "branch_ref": workspace.branch_ref,
                     "base_revision": dispatch.base_revision,
+                    "initial_head_revision": workspace.initial_head_revision,
+                    "current_head_revision": workspace.current_head_revision,
+                    "started_at": attempt.started_at.isoformat(),
                 },
                 f"attempt:{handle.run_id}",
             )
@@ -208,7 +272,7 @@ class DeliveryController:
             if self._base_revision_provider and self._simulator.can_refresh_target_base():
                 self.refresh_target_base()
                 self._dispatch_next_frontier()
-        elif item_id not in self._attention_state_published:
+        elif decision.status == "blocked" and item_id not in self._attention_state_published:
             self._set_ticket_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
             self._attention_state_published.add(item_id)
             self._attempts[item_id] = replace(self._attempts[item_id], state="needs_attention")
@@ -234,6 +298,65 @@ class DeliveryController:
             return self._active[item_id]
         except KeyError as error:
             raise ValueError(f"item is not active: {item_id}") from error
+
+    def active_item_ids(self) -> tuple[str, ...]:
+        return tuple(self._active)
+
+    def retry(self, item_id: str, *, prompt: str | None = None) -> tuple[Dispatch, ...]:
+        """Supersede one active attempt and create an isolated replacement."""
+        assignment = self.active_assignment(item_id)
+        previous = self._attempts[item_id]
+        if previous.state == "released":
+            raise ValueError(f"released item cannot be retried: {item_id}")
+        try:
+            self._runtime.cancel(assignment.handle)
+            self._workspace_factory.destroy(assignment.workspace)
+        except Exception as error:
+            failure = classify_failure(error, phase="workspace")
+            self._append_event(
+                "attempt.retry_failed",
+                {"item_id": item_id, "failure_code": failure.code},
+                f"retry-failure:{previous.id}:{failure.code}",
+            )
+            raise RuntimeError(failure.human_summary) from error
+        superseded = replace(previous, state="superseded", ended_at=datetime.now(timezone.utc))
+        self._attempts[item_id] = superseded
+        self._append_event(
+            "work_attempt.state_changed",
+            {"item_id": item_id, "run_id": assignment.handle.run_id, "state": "superseded"},
+            f"attempt-state:{assignment.handle.run_id}:superseded",
+        )
+        self._active.pop(item_id, None)
+        self._review_state_published.discard(item_id)
+        self._attention_state_published.discard(item_id)
+        self._recorded_decisions.pop(item_id, None)
+        self._validation_evidence.pop(item_id, None)
+        self._human_gates.pop(item_id, None)
+        self._pull_requests.pop(item_id, None)
+        self._simulator.retry_item(item_id)
+        next_prompt = prompt if prompt is not None else self._prompts.get(item_id)
+        if next_prompt is None:
+            raise ValueError(f"missing prompt for retry: {item_id}")
+        return self.dispatch_ready({item_id: next_prompt})
+
+    def cancel_from_wave(self, item_id: str, reason: str) -> None:
+        """Apply the explicit human escape hatch for a barrier wave."""
+        assignment = self.active_assignment(item_id)
+        if not reason.strip():
+            raise ValueError("cancellation reason is required")
+        self._runtime.cancel(assignment.handle)
+        self._workspace_factory.destroy(assignment.workspace)
+        self._simulator.cancel_from_wave(item_id, reason)
+        self._active.pop(item_id, None)
+        self._attempts[item_id] = replace(
+            self._attempts[item_id], state="cancelled", ended_at=datetime.now(timezone.utc)
+        )
+        self._set_ticket_state(item_id, WorkItemState.CANCELLED.value)
+        self._append_event(
+            "wave.item_cancelled",
+            {"item_id": item_id, "reason": reason},
+            f"wave-cancelled:{item_id}:{reason}",
+        )
 
     def validation_evidence(self, item_id: str) -> ValidationEvidence:
         return self._validation_evidence[item_id]
@@ -284,6 +407,13 @@ class DeliveryController:
         return None
 
     def _enrich_observation(self, item_id: str, observation: DeliveryObservation) -> DeliveryObservation:
+        if observation.merged and observation.merge_revision:
+            contains_revision = getattr(self._base_revision_provider, "contains_revision", None)
+            if callable(contains_revision):
+                observation = replace(
+                    observation,
+                    merge_revision_in_target=bool(contains_revision(observation.merge_revision)),
+                )
         linked = observation.linked_to_ticket
         if observation.pr_url:
             linked_checker = getattr(self._tracker, "pull_request_linked", None)
@@ -315,6 +445,7 @@ class DeliveryController:
             scope_check="pass" if observation.scope_ok else "flagged",
             acceptance_criteria_signal=observation.acceptance_criteria_signal,
             collected_at=now,
+            attempt_id=self._active[item_id].attempt.id,
         )
         self._validation_evidence[item_id] = evidence
         self._human_gates[item_id] = HumanGate(
@@ -336,7 +467,25 @@ class DeliveryController:
                 evidence.reviews_resolved,
                 observation.merged,
                 observation.merge_revision,
+                self._active[item_id].attempt.id,
             )
+        evidence_payload = json.loads(
+            json.dumps(
+                {
+                    "item_id": item_id,
+                    "run_id": self._active[item_id].handle.run_id,
+                    "evidence": asdict(evidence),
+                    "pull_request": asdict(self._pull_requests[item_id]) if item_id in self._pull_requests else None,
+                },
+                default=str,
+                sort_keys=True,
+            )
+        )
+        self._append_event(
+            "validation.evidence_recorded",
+            evidence_payload,
+            f"validation:{self._active[item_id].handle.run_id}:{observation.pr_head_sha}:{decision.status}:{evidence.acceptance_criteria_signal}",
+        )
 
     def _record_run_and_gate_request(
         self,
@@ -479,6 +628,90 @@ class DeliveryController:
                 "execution_wave.state_changed",
                 {"wave_id": wave.wave_id, "state": wave.state},
                 f"wave-state:{wave.wave_id}:{wave.state}",
+            )
+
+    def _rehydrate(self, projection: ControllerProjection) -> None:
+        if projection.base_revision is not None:
+            self._simulator.refresh_target_base(projection.base_revision)
+        self._simulator.restore_released(
+            tuple(
+                item_id
+                for item_id, state in projection.ticket_states.items()
+                if state in {WorkItemState.DONE.value, WorkItemState.CANCELLED.value}
+            )
+        )
+        for wave_id, payload in projection.wave_records.items():
+            wave = ExecutionWave(
+                wave_id=str(wave_id),
+                base_sha=str(payload["base_revision"] if "base_revision" in payload else payload["base_sha"]),
+                work_item_ids=tuple(str(item_id) for item_id in payload.get("work_item_ids", ())),
+                state=str(payload.get("state", "active")),
+            )
+            self._waves[wave.wave_id] = wave
+            self._simulator.restore_execution_wave(wave)
+        for item_id, payload in projection.active_assignments.items():
+            run_id = str(payload["run_id"])
+            started_at = datetime.fromisoformat(str(payload["started_at"]))
+            workspace = Workspace(
+                workspace_id=str(payload["workspace_id"]),
+                repository=str(payload["repository"]),
+                worktree_path=str(payload["worktree_path"]),
+                branch_ref=str(payload["branch_ref"]),
+                base_revision=str(payload["base_revision"]),
+                initial_head_revision=str(payload["initial_head_revision"]),
+                current_head_revision=str(payload["current_head_revision"]),
+                work_item_id=str(item_id),
+            )
+            attempt_record = projection.attempt_records.get(run_id, payload)
+            attempt = WorkAttempt(
+                id=str(attempt_record["attempt_id"]),
+                work_item_id=str(item_id),
+                base_sha=str(attempt_record["base_revision"]),
+                workspace_id=str(attempt_record["workspace_id"]),
+                agent_runtime="recovered",
+                started_at=started_at,
+                state=str(attempt_record.get("state", "running")),
+            )
+            dispatch = Dispatch(
+                work_item_id=str(item_id),
+                base_revision=str(payload["base_revision"]),
+                repository=workspace.repository,
+                worktree_path=workspace.worktree_path,
+                branch_ref=workspace.branch_ref,
+            )
+            self._attempts[str(item_id)] = attempt
+            self._active[str(item_id)] = ActiveAssignment(
+                dispatch, workspace, RunHandle(run_id, None), attempt
+            )
+            self._simulator.restore_dispatch(dispatch)
+        self._recorded_decisions.update(projection.gate_states)
+        for item_id, payload in projection.evidence_records.items():
+            self._validation_evidence[item_id] = ValidationEvidence(
+                work_item_id=item_id,
+                pr_linked=bool(payload.get("pr_linked")),
+                base_sha_verified=bool(payload.get("base_sha_verified")),
+                ci_verified_against_head=bool(payload.get("ci_verified_against_head")),
+                reviews_resolved=bool(payload.get("reviews_resolved")),
+                scope_check=str(payload.get("scope_check", "unknown")),
+                acceptance_criteria_signal=str(payload.get("acceptance_criteria_signal", "unknown")),
+                collected_at=datetime.fromisoformat(str(payload["collected_at"])),
+                attempt_id=str(payload["attempt_id"]) if payload.get("attempt_id") else None,
+            )
+            gate_status = projection.gate_states.get(item_id, "pending")
+            self._human_gates[item_id] = HumanGate(item_id, True, gate_status == "approved")
+        for item_id, payload in projection.pull_requests.items():
+            self._pull_requests[item_id] = PullRequest(
+                id=str(payload["id"]),
+                work_item_id=str(payload["work_item_id"]),
+                url=str(payload["url"]),
+                head_sha=str(payload["head_sha"]),
+                base_sha_at_open=str(payload["base_sha_at_open"]),
+                ci_status=str(payload["ci_status"]),
+                ci_checked_head_sha=str(payload["ci_checked_head_sha"]),
+                reviews_resolved=bool(payload["reviews_resolved"]),
+                merged=bool(payload["merged"]),
+                merge_commit_sha=str(payload["merge_commit_sha"]) if payload.get("merge_commit_sha") else None,
+                attempt_id=str(payload["attempt_id"]) if payload.get("attempt_id") else None,
             )
 
 

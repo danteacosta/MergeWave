@@ -39,6 +39,10 @@ The current offline slice includes:
 - explicit `WorkAttempt`, `ExecutionWave`, `PullRequest`, `ValidationEvidence`, and `HumanGate` entities;
 - configurable current-review policy with required approvals and reviewers;
 - controller-driven reconciliation, automatic next-frontier dispatch, and event-log state projection;
+- Linear bootstrap from executable ticket descriptions to a compiled DAG and live controller;
+- explicit attempt retry with workspace destruction, supersession, and isolated retry branches;
+- explicit human escape from `wave_barrier` plus controller restart rehydration;
+- ACP launch profiles for Codex, Claude Code, Gemini, and OpenHands without provider SDK coupling;
 - stable failure classification for workspace, runtime, tracker, delivery, and reconciliation failures;
 - optional ARP 3.0 wire recording from controller runs, gate requests, evidence, and decisions;
 - ARP 3.0 value-object mapping with contract validation, namespaced delivery extensions, and content-addressed evidence artifacts;
@@ -73,6 +77,11 @@ PYTHONPATH=src python -m mergewave --github-smoke
 
 The commands emit one JSON summary suitable for attaching to a run record or
 using as input to a later reconciliation step.
+
+These are real provider checks when invoked with credentials. They are
+deliberately read-only: run them against a disposable Linear team and GitHub
+repository before enabling them in an operational environment. No credential
+or review body is printed.
 
 The ARP integration is optional. Install ARP 3.x in the environment before
 constructing `Arp3Recorder`; the core remains usable without that dependency.

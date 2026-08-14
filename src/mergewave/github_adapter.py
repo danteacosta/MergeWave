@@ -82,8 +82,14 @@ class GitHubDeliveryObserver:
         checks = self._get(f"/repos/{self._repository}/commits/{head_sha}/check-runs")
         check_runs = checks.get("check_runs", []) if isinstance(checks, dict) else []
         ci_head_sha = str(check_runs[0].get("head_sha", "")) if check_runs else ""
+        ci_pending = not check_runs or any(
+            (run.get("status") is not None and run.get("status") != "completed")
+            or run.get("conclusion") is None
+            for run in check_runs
+        )
         ci_passed = bool(check_runs) and all(
-            run.get("conclusion") == "success" for run in check_runs
+            run.get("conclusion") == "success" and run.get("status", "completed") == "completed"
+            for run in check_runs
         )
         reviews = self._get(f"/repos/{self._repository}/pulls/{number}/reviews")
         latest_review_by_reviewer: dict[str, str] = {}
@@ -134,6 +140,7 @@ class GitHubDeliveryObserver:
             approval_reviewers=tuple(sorted(approved_reviewers)),
             changes_requested=changes_requested,
             required_reviewers_satisfied=required_reviewers_satisfied,
+            ci_pending=ci_pending,
         )
 
     def _get(self, path: str) -> object:
