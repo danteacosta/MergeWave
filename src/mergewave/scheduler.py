@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 
 from .contracts import DependencyGraph
+from .domain import ExecutionWave
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,9 @@ class Scheduler:
         self._released: set[str] = set()
         self._active_wave: set[str] = set()
         self._barrier_open = True
+        self._wave_sequence = 0
+        self._current_wave: ExecutionWave | None = None
+        self._waves: list[ExecutionWave] = []
 
     def dispatch_ready(self) -> tuple[Dispatch, ...]:
         ready = self.preview_ready()
@@ -33,6 +38,15 @@ class Scheduler:
         if self._policy == "wave_barrier" and ready:
             self._active_wave = {dispatch.work_item_id for dispatch in ready}
             self._barrier_open = False
+        if ready:
+            self._wave_sequence += 1
+            self._current_wave = ExecutionWave(
+                wave_id=f"wave-{self._wave_sequence}",
+                base_sha=self._base_revision,
+                work_item_ids=tuple(dispatch.work_item_id for dispatch in ready),
+                state="active",
+            )
+            self._waves.append(self._current_wave)
         return ready
 
     def preview_ready(self) -> tuple[Dispatch, ...]:
@@ -51,6 +65,9 @@ class Scheduler:
         if item_id not in self._dispatched:
             raise ValueError(f"item was not dispatched: {item_id}")
         self._released.add(item_id)
+        if self._current_wave and set(self._current_wave.work_item_ids).issubset(self._released):
+            self._current_wave = replace(self._current_wave, state="released")
+            self._waves[-1] = self._current_wave
 
     def refresh_target_base(self, revision: str) -> None:
         if self._policy == "wave_barrier":
@@ -59,3 +76,9 @@ class Scheduler:
             self._active_wave = set()
             self._barrier_open = True
         self._base_revision = revision
+
+    def current_execution_wave(self) -> ExecutionWave | None:
+        return self._current_wave
+
+    def execution_waves(self) -> tuple[ExecutionWave, ...]:
+        return tuple(self._waves)

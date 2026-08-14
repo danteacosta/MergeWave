@@ -10,7 +10,7 @@ from .contracts import (
     validate_work_item,
 )
 from .acp_runtime import AcpAgentRuntime, AcpTransport, StdioAcpTransport
-from .controller import ActiveAssignment, DeliveryController
+from .controller import ActiveAssignment, ControllerProjection, DeliveryController
 from .domain import ExecutionWave, GateStatus, HumanGate, PullRequest, ValidationEvidence, WorkAttempt
 from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
@@ -28,6 +28,7 @@ from .simulator import (
     FailureRecord,
     GateDecision,
     MergeWaveSimulator,
+    ReviewPolicy,
 )
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "AcpTransport",
     "StdioAcpTransport",
     "ActiveAssignment",
+    "ControllerProjection",
     "Arp3Recorder",
     "CliAgentRuntime",
     "DeliveryObservation",
@@ -57,6 +59,7 @@ __all__ = [
     "LinearGraphQLAdapter",
     "LinearGraphQLTransport",
     "MergeWaveSimulator",
+    "ReviewPolicy",
     "RunHandle",
     "RunSpec",
     "RuntimeCapabilities",

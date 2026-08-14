@@ -74,6 +74,9 @@ class GitHubDeliveryObserverTests(unittest.TestCase):
         self.assertEqual(observation.pr_url, "https://github.com/acme/demo/pull/7")
         self.assertEqual(observation.base_sha_at_open, "main-0")
         self.assertTrue(observation.reviews_resolved)
+        self.assertEqual(observation.approval_reviewers, ("reviewer",))
+        self.assertFalse(observation.changes_requested)
+        self.assertTrue(observation.required_reviewers_satisfied)
         self.assertEqual(observation.merged_by, "maintainer")
 
     def test_requested_changes_are_not_resolved_reviews(self) -> None:

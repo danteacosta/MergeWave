@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import json
+import re
+import time
 from typing import Protocol
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -19,10 +22,16 @@ class UrllibLinearTransport:
         *,
         api_url: str = "https://api.linear.app/graphql",
         authorization_scheme: str = "",
+        max_retries: int = 2,
+        backoff_seconds: float = 0.5,
     ) -> None:
         self._token = token
         self._api_url = api_url
         self._authorization = f"{authorization_scheme} {token}" if authorization_scheme else token
+        if max_retries < 0 or backoff_seconds < 0:
+            raise ValueError("retry configuration must be non-negative")
+        self._max_retries = max_retries
+        self._backoff_seconds = backoff_seconds
 
     def execute(self, query: str, variables: dict[str, object]) -> object:
         request = Request(
@@ -35,8 +44,18 @@ class UrllibLinearTransport:
                 "Authorization": self._authorization,
             },
         )
-        with urlopen(request) as response:
-            return json.loads(response.read().decode("utf-8"))
+        for attempt in range(self._max_retries + 1):
+            try:
+                with urlopen(request) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except HTTPError as error:
+                retryable = error.code == 429 or error.code >= 500
+                if not retryable or attempt >= self._max_retries:
+                    raise
+                retry_after = error.headers.get("Retry-After") if error.headers else None
+                delay = float(retry_after) if retry_after else self._backoff_seconds * (2**attempt)
+                time.sleep(delay)
+        raise RuntimeError("Linear request exhausted retries")
 
 
 class LinearGraphQLAdapter:
@@ -47,11 +66,10 @@ class LinearGraphQLAdapter:
         self._team_id = team_id
 
     def fetch_candidates(self) -> Sequence[dict[str, object]]:
-        response = self._execute(
-            """
-            query MergeWaveTeamIssues($team_id: String!) {
+        query = """
+            query MergeWaveTeamIssues($team_id: String!, $after: String) {
               team(id: $team_id) {
-                issues {
+                issues(after: $after) {
                   nodes {
                     id identifier title description url
                     state { id name }
@@ -59,16 +77,94 @@ class LinearGraphQLAdapter:
                       nodes { type issue { identifier } }
                     }
                   }
+                  pageInfo { hasNextPage endCursor }
                 }
               }
             }
+            """
+        candidates: list[dict[str, object]] = []
+        after: str | None = None
+        seen_cursors: set[str] = set()
+        while True:
+            response = self._execute(
+                query,
+                {"team_id": self._team_id, "after": after},
+            )
+            team = response.get("team") if isinstance(response, Mapping) else None
+            issues = team.get("issues", {}) if isinstance(team, Mapping) else {}
+            nodes = issues.get("nodes", []) if isinstance(issues, Mapping) else []
+            candidates.extend(self._normalize_issue(node) for node in nodes if isinstance(node, Mapping))
+            page_info = issues.get("pageInfo", {}) if isinstance(issues, Mapping) else {}
+            if not isinstance(page_info, Mapping) or not page_info.get("hasNextPage"):
+                break
+            next_cursor = page_info.get("endCursor")
+            if not isinstance(next_cursor, str) or next_cursor in seen_cursors:
+                raise RuntimeError("Linear pagination returned an invalid or repeated cursor")
+            seen_cursors.add(next_cursor)
+            after = next_cursor
+        return tuple(candidates)
+
+    def fetch_dependencies(self, item_id: str) -> Sequence[str]:
+        response = self._execute(
+            """
+            query MergeWaveIssueDependencies($issue_id: String!) {
+              issue(id: $issue_id) {
+                inverseRelations { nodes { type issue { identifier } } }
+              }
+            }
             """,
-            {"team_id": self._team_id},
+            {"issue_id": item_id},
         )
-        team = response.get("team") if isinstance(response, Mapping) else None
-        issues = team.get("issues", {}) if isinstance(team, Mapping) else {}
-        nodes = issues.get("nodes", []) if isinstance(issues, Mapping) else []
-        return tuple(self._normalize_issue(node) for node in nodes if isinstance(node, Mapping))
+        issue = response.get("issue")
+        relations = issue.get("inverseRelations", {}) if isinstance(issue, Mapping) else {}
+        nodes = relations.get("nodes", []) if isinstance(relations, Mapping) else []
+        return [
+            relation["issue"]["identifier"]
+            for relation in nodes
+            if isinstance(relation, Mapping)
+            and relation.get("type") == "blocks"
+            and isinstance(relation.get("issue"), Mapping)
+            and isinstance(relation["issue"].get("identifier"), str)
+        ]
+
+    def pull_request_linked(self, item_id: str, url: str) -> bool:
+        response = self._execute(
+            """
+            query MergeWaveAttachment($url: String!) {
+              attachmentsForURL(url: $url) {
+                nodes { issue { id identifier } }
+              }
+            }
+            """,
+            {"url": url},
+        )
+        attachments = response.get("attachmentsForURL", {})
+        nodes = attachments.get("nodes", []) if isinstance(attachments, Mapping) else []
+        return any(
+            isinstance(node, Mapping)
+            and isinstance(node.get("issue"), Mapping)
+            and item_id in {node["issue"].get("id"), node["issue"].get("identifier")}
+            for node in nodes
+        )
+
+    def acceptance_criteria_signal(self, item_id: str) -> str:
+        response = self._execute(
+            """
+            query MergeWaveAcceptanceCriteria($issue_id: String!) {
+              issue(id: $issue_id) { description }
+            }
+            """,
+            {"issue_id": item_id},
+        )
+        issue = response.get("issue")
+        description = issue.get("description", "") if isinstance(issue, Mapping) else ""
+        if not isinstance(description, str):
+            return "unknown"
+        checks = re.findall(r"^\s*[-*]\s+\[([ xX])\]", description, flags=re.MULTILINE)
+        if not checks:
+            return "unknown"
+        completed = sum(value.lower() == "x" for value in checks)
+        return "complete" if completed == len(checks) else "partial"
 
     def transition_state(self, item_id: str, state: str) -> None:
         response = self._execute(

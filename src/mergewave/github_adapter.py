@@ -98,11 +98,9 @@ class GitHubDeliveryObserver:
         approved_reviewers = {
             reviewer for reviewer, state in latest_review_by_reviewer.items() if state == "APPROVED"
         }
-        reviews_resolved = (
-            not any(state == "CHANGES_REQUESTED" for state in latest_review_by_reviewer.values())
-            and len(approved_reviewers) >= self._required_approvals
-            and self._required_reviewers.issubset(approved_reviewers)
-        )
+        changes_requested = any(state == "CHANGES_REQUESTED" for state in latest_review_by_reviewer.values())
+        reviews_resolved = not changes_requested
+        required_reviewers_satisfied = self._required_reviewers.issubset(approved_reviewers)
         files = self._get(f"/repos/{self._repository}/pulls/{number}/files")
         declared_paths = tuple(self._scope_paths.get(item_id, ()))
         scope_ok = isinstance(files, list) and all(
@@ -133,6 +131,9 @@ class GitHubDeliveryObserver:
             base_sha_at_open=str(pull_request.get("base", {}).get("sha", "")),
             reviews_resolved=reviews_resolved,
             merged_by=(pull_request.get("merged_by", {}) or {}).get("login"),
+            approval_reviewers=tuple(sorted(approved_reviewers)),
+            changes_requested=changes_requested,
+            required_reviewers_satisfied=required_reviewers_satisfied,
         )
 
     def _get(self, path: str) -> object:

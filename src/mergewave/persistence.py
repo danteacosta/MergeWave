@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import sqlite3
-from typing import Mapping
+from collections.abc import Callable
+from typing import Mapping, TypeVar
+
+
+State = TypeVar("State")
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,13 @@ class SqliteEventLog:
             "SELECT sequence, kind, payload, idempotency_key FROM events ORDER BY sequence"
         ).fetchall()
         return tuple(EventRecord(row[0], row[1], json.loads(row[2]), row[3]) for row in rows)
+
+    def reduce(self, initial: State, reducer: Callable[[State, EventRecord], State]) -> State:
+        """Rebuild a projection solely from the durable event stream."""
+        state = initial
+        for event in self.events():
+            state = reducer(state, event)
+        return state
 
     def close(self) -> None:
         self._connection.close()

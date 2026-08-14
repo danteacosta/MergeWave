@@ -140,6 +140,7 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
                         "demo-repository", "/worktrees/CTRL-1", "mergewave/CTRL-1",
                         "main-0", "main-0", "commit-1", "commit-1", "commit-1",
                         True, 1, True, True, "main-1", True,
+                        pr_url="https://github.com/acme/demo/pull/1",
                     )
                 }
             ),
@@ -180,6 +181,7 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
                         "demo-repository", "/worktrees/CTRL-1", "mergewave/CTRL-1",
                         "main-0", "main-0", "commit-1", "commit-1", "commit-1",
                         True, 1, True, True, "main-1", True,
+                        pr_url="https://github.com/acme/demo/pull/1",
                     )
                 }
             ),
@@ -265,6 +267,44 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
         self.assertEqual(provider.reads, 1)
         self.assertEqual(controller._simulator.preview_ready(), ())
 
+    def test_controller_persists_attempt_and_wave_contracts(self) -> None:
+        simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=FakeTracker(),
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver({"CTRL-1": replace_delivery()}),
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement"})
+
+        self.assertEqual(controller.work_attempt("CTRL-1").state, "running")
+        self.assertEqual(controller.execution_wave().work_item_ids, ("CTRL-1",))
+        controller.reconcile("CTRL-1")
+        self.assertEqual(controller.work_attempt("CTRL-1").state, "released")
+
+    def test_controller_dispatches_the_next_frontier_after_fresh_base_observation(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "CTRL-1", "blocked_by": []}, {"id": "CTRL-2", "blocked_by": ["CTRL-1"]}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+        )
+        workspaces = FakeWorkspaceFactory()
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=FakeTracker(),
+            workspace_factory=workspaces,
+            runtime=FakeRuntime(),
+            observer=FakeObserver({"CTRL-1": replace_delivery()}),
+            base_revision_provider=FakeBaseRevisionProvider("main-1"),
+        )
+
+        controller.dispatch_ready({"CTRL-1": "First", "CTRL-2": "Second"})
+        controller.reconcile("CTRL-1")
+
+        self.assertEqual(controller.active_assignment("CTRL-2").dispatch.base_revision, "main-1")
+
 
 def replace_delivery(**changes: object) -> DeliveryObservation:
     from dataclasses import replace
@@ -273,6 +313,7 @@ def replace_delivery(**changes: object) -> DeliveryObservation:
         "demo-repository", "/worktrees/CTRL-1", "mergewave/CTRL-1",
         "main-0", "main-0", "commit-1", "commit-1", "commit-1",
         True, 1, True, True, "main-1", True,
+        pr_url="https://github.com/acme/demo/pull/1",
     )
     return replace(base, **changes)
 

@@ -47,6 +47,21 @@ class SchedulerTests(unittest.TestCase):
             [("D", "main-3")],
         )
 
+    def test_dispatches_are_exposed_as_execution_waves(self) -> None:
+        scheduler = Scheduler(graph(), policy="wave_barrier", base_revision="main-0")
+
+        scheduler.dispatch_ready()
+        wave = scheduler.current_execution_wave()
+
+        self.assertIsNotNone(wave)
+        self.assertEqual(wave.base_sha, "main-0")
+        self.assertEqual(set(wave.work_item_ids), {"A", "B", "C"})
+        self.assertEqual(wave.state, "active")
+
+        for item_id in ("A", "B", "C"):
+            scheduler.release(item_id)
+        self.assertEqual(scheduler.current_execution_wave().state, "released")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,13 +8,13 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 
-from .domain import HumanGate, PullRequest, ValidationEvidence
-from .contracts import WorkItemState
-from .git_workspace import Workspace
+from .domain import ExecutionWave, HumanGate, PullRequest, ValidationEvidence, WorkAttempt
+from .contracts import WorkItem, WorkItemState
+from .git_workspace import Workspace, WorkspaceDriftError
 from .persistence import SqliteEventLog
 from .ports import BaseRevisionProvider, DeliveryObserver, ReliabilityRecorder, TrackerAdapter, WorkspaceFactory
 from .runtime import AgentEvent, AgentRuntime, RunHandle, RunSpec, classify_runtime_event
-from .simulator import DeliveryObservation, Dispatch, FailureRecord, GateDecision, MergeWaveSimulator
+from .simulator import DeliveryObservation, Dispatch, FailureRecord, GateDecision, MergeWaveSimulator, classify_failure
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,49 @@ class ActiveAssignment:
     dispatch: Dispatch
     workspace: Workspace
     handle: RunHandle
+    attempt: WorkAttempt
+
+
+@dataclass(frozen=True)
+class ControllerProjection:
+    ticket_states: Mapping[str, str]
+    base_revision: str | None
+    attempt_states: Mapping[str, str]
+    wave_states: Mapping[str, str]
+
+    @classmethod
+    def from_event_log(cls, event_log: SqliteEventLog) -> "ControllerProjection":
+        initial = {"ticket_states": {}, "base_revision": None, "attempt_states": {}, "wave_states": {}}
+        reduced = event_log.reduce(initial, cls._reduce)
+        return cls(
+            ticket_states=reduced["ticket_states"],
+            base_revision=reduced["base_revision"],
+            attempt_states=reduced["attempt_states"],
+            wave_states=reduced["wave_states"],
+        )
+
+    @staticmethod
+    def _reduce(state: dict[str, object], event: object) -> dict[str, object]:
+        payload = event.payload
+        next_state = {
+            "ticket_states": dict(state["ticket_states"]),
+            "base_revision": state["base_revision"],
+            "attempt_states": dict(state["attempt_states"]),
+            "wave_states": dict(state["wave_states"]),
+        }
+        if event.kind == "ticket.state_changed":
+            next_state["ticket_states"][payload["item_id"]] = payload["state"]
+        elif event.kind == "base_revision.refreshed":
+            next_state["base_revision"] = payload["revision"]
+        elif event.kind == "work_attempt.started":
+            next_state["attempt_states"][payload["run_id"]] = "running"
+        elif event.kind == "work_attempt.state_changed":
+            next_state["attempt_states"][payload["run_id"]] = payload["state"]
+        elif event.kind == "execution_wave.started":
+            next_state["wave_states"][payload["wave_id"]] = "active"
+        elif event.kind == "execution_wave.state_changed":
+            next_state["wave_states"][payload["wave_id"]] = payload["state"]
+        return next_state
 
 
 class DeliveryController:
@@ -43,6 +86,7 @@ class DeliveryController:
         recorder: ReliabilityRecorder | None = None,
         base_revision_provider: BaseRevisionProvider | None = None,
         event_log: SqliteEventLog | None = None,
+        work_items: Mapping[str, WorkItem] | None = None,
     ) -> None:
         self._simulator = simulator
         self._tracker = tracker
@@ -52,6 +96,8 @@ class DeliveryController:
         self._recorder = recorder
         self._base_revision_provider = base_revision_provider
         self._event_log = event_log
+        self._work_items = work_items or {}
+        self._prompts: dict[str, str] = {}
         self._active: dict[str, ActiveAssignment] = {}
         self._review_state_published: set[str] = set()
         self._recorded_decisions: dict[str, str] = {}
@@ -60,12 +106,16 @@ class DeliveryController:
         self._pull_requests: dict[str, PullRequest] = {}
         self._attention_state_published: set[str] = set()
         self._done_state_published: set[str] = set()
+        self._attempts: dict[str, WorkAttempt] = {}
+        self._waves: dict[str, ExecutionWave] = {}
 
     def dispatch_ready(self, prompts: Mapping[str, str]) -> tuple[Dispatch, ...]:
         dispatches = self._simulator.preview_ready()
         missing_prompts = [item.work_item_id for item in dispatches if item.work_item_id not in prompts]
         if missing_prompts:
             raise ValueError(f"missing prompts for dispatched items: {missing_prompts}")
+
+        self._prompts.update(prompts)
 
         dispatches = self._simulator.dispatch_ready()
 
@@ -74,21 +124,47 @@ class DeliveryController:
                 dispatch.work_item_id,
                 dispatch.base_revision,
             )
-            self._tracker.transition_state(dispatch.work_item_id, WorkItemState.IN_PROGRESS.value)
+            self._set_ticket_state(dispatch.work_item_id, WorkItemState.IN_PROGRESS.value)
+            attempt = WorkAttempt(
+                id=f"attempt:{dispatch.work_item_id}:{dispatch.base_revision}",
+                work_item_id=dispatch.work_item_id,
+                base_sha=dispatch.base_revision,
+                workspace_id=workspace.workspace_id,
+                agent_runtime=type(self._runtime).__qualname__,
+                started_at=workspace.created_at or datetime.now(timezone.utc),
+                state="running",
+            )
             handle = self._runtime.start(
                 RunSpec(
                     run_id=f"{dispatch.work_item_id}:{dispatch.base_revision}",
                     work_item_id=dispatch.work_item_id,
                     prompt=prompts[dispatch.work_item_id],
                     workspace_path=workspace.worktree_path,
+                    work_item=self._work_items.get(dispatch.work_item_id),
+                    workspace=workspace,
                 )
             )
-            self._active[dispatch.work_item_id] = ActiveAssignment(dispatch, workspace, handle)
+            self._attempts[dispatch.work_item_id] = attempt
+            self._active[dispatch.work_item_id] = ActiveAssignment(dispatch, workspace, handle, attempt)
             self._record_run_and_gate_request(dispatch, workspace, prompts[dispatch.work_item_id], handle)
             self._append_event(
                 "work_attempt.started",
-                {"item_id": dispatch.work_item_id, "run_id": handle.run_id, "base_revision": dispatch.base_revision},
+                {
+                    "item_id": dispatch.work_item_id,
+                    "run_id": handle.run_id,
+                    "attempt_id": attempt.id,
+                    "workspace_id": workspace.workspace_id,
+                    "base_revision": dispatch.base_revision,
+                },
                 f"attempt:{handle.run_id}",
+            )
+        wave = self._simulator.current_execution_wave()
+        if wave is not None:
+            self._waves[wave.wave_id] = wave
+            self._append_event(
+                "execution_wave.started",
+                {"wave_id": wave.wave_id, "base_revision": wave.base_sha, "work_item_ids": list(wave.work_item_ids)},
+                f"wave:{wave.wave_id}",
             )
         return dispatches
 
@@ -96,24 +172,46 @@ class DeliveryController:
         assignment = self._active.get(item_id)
         if assignment is None:
             raise ValueError(f"item is not active: {item_id}")
-        workspace = self._workspace_factory.inspect(assignment.workspace)
-        observation = self._observer.observe(item_id, workspace)
-        observation = self._enrich_observation(item_id, observation)
+        try:
+            workspace = self._workspace_factory.inspect(assignment.workspace)
+        except (FileNotFoundError, WorkspaceDriftError) as error:
+            failure = classify_failure(error, phase="workspace")
+            self._set_ticket_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
+            self._attention_state_published.add(item_id)
+            self._append_event("reconciliation.failed", {"item_id": item_id, "failure_code": failure.code}, f"reconcile-failure:{item_id}:{failure.code}")
+            return GateDecision("blocked", failure)
+        try:
+            observation = self._observer.observe(item_id, workspace)
+        except Exception as error:
+            failure = classify_failure(error, phase="delivery")
+            self._append_event("reconciliation.failed", {"item_id": item_id, "failure_code": failure.code}, f"reconcile-failure:{item_id}:{failure.code}")
+            return GateDecision("blocked", failure)
+        try:
+            observation = self._enrich_observation(item_id, observation)
+        except Exception as error:
+            failure = classify_failure(error, phase="tracker")
+            self._append_event("reconciliation.failed", {"item_id": item_id, "failure_code": failure.code}, f"reconcile-failure:{item_id}:{failure.code}")
+            return GateDecision("blocked", failure)
         self._simulator.observe_delivery(item_id, observation)
         if observation.pr_head_sha and item_id not in self._review_state_published:
-            self._tracker.transition_state(item_id, WorkItemState.IN_REVIEW.value)
+            self._set_ticket_state(item_id, WorkItemState.IN_REVIEW.value)
             self._review_state_published.add(item_id)
         decision = self._simulator.evaluate_gate(item_id)
         self._record_domain_evidence(item_id, observation, decision)
         if decision.status == "approved":
             if item_id not in self._done_state_published:
-                self._tracker.transition_state(item_id, "Done")
+                self._set_ticket_state(item_id, WorkItemState.DONE.value)
                 self._done_state_published.add(item_id)
+                self._attempts[item_id] = replace(self._attempts[item_id], state="released")
+                self._append_event("work_attempt.state_changed", {"run_id": assignment.handle.run_id, "state": "released"}, f"attempt-state:{assignment.handle.run_id}:released")
             if self._base_revision_provider and self._simulator.can_refresh_target_base():
                 self.refresh_target_base()
+                self._dispatch_next_frontier()
         elif item_id not in self._attention_state_published:
-            self._tracker.transition_state(item_id, "NeedsAttention")
+            self._set_ticket_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
             self._attention_state_published.add(item_id)
+            self._attempts[item_id] = replace(self._attempts[item_id], state="needs_attention")
+            self._append_event("work_attempt.state_changed", {"run_id": assignment.handle.run_id, "state": "needs_attention"}, f"attempt-state:{assignment.handle.run_id}:needs_attention")
         self._record_decision(item_id, assignment.handle, decision)
         self._append_event(
             "gate.decided",
@@ -145,6 +243,15 @@ class DeliveryController:
     def pull_request(self, item_id: str) -> PullRequest:
         return self._pull_requests[item_id]
 
+    def work_attempt(self, item_id: str) -> WorkAttempt:
+        return self._attempts[item_id]
+
+    def execution_wave(self) -> ExecutionWave:
+        wave = self._simulator.current_execution_wave()
+        if wave is None:
+            raise ValueError("no execution wave has been dispatched")
+        return wave
+
     def observe_runtime_events(self, item_id: str, events: list[AgentEvent]) -> FailureRecord | None:
         for event in events:
             code = classify_runtime_event(event)
@@ -160,8 +267,13 @@ class DeliveryController:
                 "Route the item to NeedsAttention and reconcile a new attempt after the workspace is safe.",
             )
             if item_id not in self._attention_state_published:
-                self._tracker.transition_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
+                self._set_ticket_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
                 self._attention_state_published.add(item_id)
+            if item_id in self._attempts:
+                assignment = self._active.get(item_id)
+                self._attempts[item_id] = replace(self._attempts[item_id], state="needs_attention")
+                if assignment is not None:
+                    self._append_event("work_attempt.state_changed", {"run_id": assignment.handle.run_id, "state": "needs_attention"}, f"attempt-state:{assignment.handle.run_id}:needs_attention")
             self._append_event(
                 "runtime.failed",
                 {"item_id": item_id, "failure_code": code},
@@ -176,6 +288,10 @@ class DeliveryController:
             linked_checker = getattr(self._tracker, "pull_request_linked", None)
             if callable(linked_checker):
                 linked = bool(linked_checker(item_id, observation.pr_url))
+            else:
+                linked = False
+        elif observation.pr_head_sha:
+            linked = False
         acceptance_signal = observation.acceptance_criteria_signal
         acceptance_checker = getattr(self._tracker, "acceptance_criteria_signal", None)
         if callable(acceptance_checker):
@@ -191,7 +307,7 @@ class DeliveryController:
         now = datetime.now(timezone.utc)
         evidence = ValidationEvidence(
             work_item_id=item_id,
-            pr_linked=bool(observation.pr_head_sha) and observation.linked_to_ticket is not False,
+            pr_linked=bool(observation.pr_head_sha) and observation.linked_to_ticket is True,
             base_sha_verified=observation.base_is_ancestor,
             ci_verified_against_head=observation.ci_head_sha == observation.pr_head_sha,
             reviews_resolved=observation.reviews_resolved if observation.reviews_resolved is not None else observation.approvals >= 1,
@@ -278,9 +394,9 @@ class DeliveryController:
             evidence_id=f"{self._evidence_id(handle)}:acceptance",
             run_id=handle.run_id,
             claim="acceptance_criteria_signal",
-            observed="recorded",
-            expected="recorded",
-            comparator="equals",
+            observed=self._validation_evidence[item_id].acceptance_criteria_signal,
+            expected="complete",
+            comparator="informational",
             stage="acceptance",
             capture_policy="metadata",
         )
@@ -307,5 +423,26 @@ class DeliveryController:
         if self._event_log is not None:
             self._event_log.append(kind, payload, idempotency_key=key)
 
+    def _set_ticket_state(self, item_id: str, state: str) -> None:
+        self._tracker.transition_state(item_id, state)
+        self._append_event(
+            "ticket.state_changed",
+            {"item_id": item_id, "state": state},
+            f"ticket-state:{item_id}:{state}",
+        )
 
-__all__ = ["ActiveAssignment", "DeliveryController"]
+    def _dispatch_next_frontier(self) -> tuple[Dispatch, ...]:
+        ready = self._simulator.preview_ready()
+        if not ready:
+            return ()
+        if any(item.work_item_id not in self._prompts for item in ready):
+            self._append_event(
+                "frontier.waiting_for_prompts",
+                {"work_item_ids": [item.work_item_id for item in ready]},
+                f"frontier-prompts:{','.join(item.work_item_id for item in ready)}",
+            )
+            return ()
+        return self.dispatch_ready(self._prompts)
+
+
+__all__ = ["ActiveAssignment", "ControllerProjection", "DeliveryController"]
