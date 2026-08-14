@@ -64,6 +64,34 @@ class LinearGraphQLAdapter:
     def __init__(self, transport: LinearGraphQLTransport, *, team_id: str) -> None:
         self._transport = transport
         self._team_id = team_id
+        self._state_ids: dict[str, str] = {}
+
+    def resolve_state_id(self, state: str) -> str:
+        if state in self._state_ids.values():
+            return state
+        if not self._state_ids:
+            response = self._execute(
+                """
+                query MergeWaveTeamWorkflowStates($team_id: String!) {
+                  team(id: $team_id) {
+                    states { nodes { id name type } }
+                  }
+                }
+                """,
+                {"team_id": self._team_id},
+            )
+            team = response.get("team")
+            states = team.get("states", {}) if isinstance(team, Mapping) else {}
+            nodes = states.get("nodes", []) if isinstance(states, Mapping) else []
+            self._state_ids = {
+                str(node["name"]): str(node["id"])
+                for node in nodes
+                if isinstance(node, Mapping) and isinstance(node.get("name"), str) and isinstance(node.get("id"), str)
+            }
+        try:
+            return self._state_ids[state]
+        except KeyError as error:
+            raise ValueError(f"Linear workflow state was not found: {state}") from error
 
     def fetch_candidates(self) -> Sequence[dict[str, object]]:
         query = """
@@ -173,7 +201,7 @@ class LinearGraphQLAdapter:
               issueUpdate(id: $issue_id, input: { stateId: $state_id }) { success }
             }
             """,
-            {"issue_id": item_id, "state_id": state},
+            {"issue_id": item_id, "state_id": self.resolve_state_id(state)},
         )
         self._require_success(response, "issueUpdate")
 
@@ -234,6 +262,7 @@ class LinearGraphQLAdapter:
             if isinstance(blocker, Mapping) and isinstance(blocker.get("identifier"), str):
                 blocked_by.append(blocker["identifier"])
         state = issue.get("state")
+        state_id = state.get("id") if isinstance(state, Mapping) else None
         state_name = state.get("name") if isinstance(state, Mapping) else None
         return {
             "id": issue.get("identifier", issue.get("id", "")),
@@ -242,6 +271,7 @@ class LinearGraphQLAdapter:
             "description": issue.get("description") or "",
             "url": issue.get("url", ""),
             "state": state_name or "",
+            "state_id": state_id or "",
             "blocked_by": blocked_by,
         }
 

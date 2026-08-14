@@ -65,7 +65,9 @@ unavailable, creation fails and no attempt is started.
 There is at most one active `WorkAttempt` per work item. A retry is a new
 attempt and must first cancel or terminally mark the previous attempt, destroy
 or quarantine its workspace, and keep a reference to the superseded attempt.
-An old attempt or its PR cannot satisfy the new attempt's gate. Automatic retry
+An old attempt or its PR cannot satisfy the new attempt's gate. PR and
+validation-evidence records carry the current `attempt_id` in addition to the
+isolated branch/workspace identity. Automatic retry
 or concurrent attempts are not enabled in v0.2; a retry is an explicit
 operator/controller operation.
 
@@ -101,6 +103,14 @@ complete semantic or generated-file analysis.
 
 The default gate remains human-controlled. Auto-merge is out of scope.
 
+An observation that is still progressing is not an operational failure: CI
+running, stale CI awaiting a current-head result, review approval pending, and
+the human merge not yet visible produce a `pending` gate and leave the ticket
+in its current delivery state. `NeedsAttention` is reserved for a failed or
+invalid observation that requires intervention, such as workspace drift,
+failed CI, unresolved requested changes, or a merge revision that cannot be
+proved to exist in the fetched target branch.
+
 ## Workspace invariants
 
 Workspace creation records `base_revision`, `initial_head_revision`,
@@ -126,18 +136,23 @@ semantics remain runtime adapter responsibilities.
 Operational failures are normalized into stable records with code, phase,
 severity, retryability, human explanation, agent guidance, and next action.
 The current vocabulary includes `workspace_missing`, `workspace_drift`,
-`base_revision_mismatch`, `pull_request_unlinked`, `stale_ci`,
+`base_revision_mismatch`, `pull_request_unlinked`, `ci_pending`, `stale_ci`,
+`merge_revision_not_in_target`,
 `review_changes_requested`, `required_reviewer_missing`, `agent_timeout`,
 `runtime_failed`, `tracker_authentication_failed`, `tracker_unavailable`,
 `retry_exhaustion`, and `reconciliation_interrupted`.
 
 The SQLite event log is idempotent and can reduce its ordered event stream into
 a `ControllerProjection` containing ticket states, base revision, attempt
-states, and wave states. `ReconciliationLoop.reconcile_controller()` connects
-the durable reconciliation boundary to the controller. Successful approval
-refreshes the target base and dispatches the next frontier when prompts are
-available; otherwise the event log records that the frontier is waiting for
-prompts.
+states, active assignments, waves, gate states, validation evidence, and pull
+requests. `DeliveryController.from_event_log()` rebuilds those durable
+entities after restart. Runtime handles are intentionally not trusted across a
+restart: the recovered controller requires a fresh workspace and delivery
+observation before it can release an item. `ReconciliationLoop.reconcile_controller()`
+connects the durable reconciliation boundary to the controller. Successful
+approval refreshes the target base and dispatches the next frontier when
+prompts are available; otherwise the event log records that the frontier is
+waiting for prompts.
 
 ## Adapters
 
@@ -148,14 +163,22 @@ The current ports and adapters are:
   comments, and retry/backoff for rate-limit/server failures;
 - GitHub: PR lookup, `base_sha_at_open`, current-head CI, latest review state,
   required reviewers, changed paths, merge, and ancestry observation;
+- Git: `GitBaseRevisionProvider` fetches `origin/main` and proves that an
+  observed `merge_revision` is an ancestor of that fetched target revision;
 - CLI and ACP runtimes;
+- ACP launch profiles for Codex, Claude Code, Gemini, and OpenHands. Profiles
+  describe commands, capabilities, sandbox, permissions, and cost limits but
+  do not import provider SDKs or resolve credentials;
 - optional ARP 3.0 recorder.
 
 Webhooks, multi-repository scheduling, dashboard UI, dependency inference,
 conflict resolution, auto-merge, project-wide agent concurrency limits, and
 project-wide cost budgets remain non-goals for this release. Runtime-level
 cost limits and sandbox permissions exist in `WorkerProfile`; centralized
-budget admission is deferred to a later policy layer.
+budget admission is deferred to a later policy layer. The real provider smoke
+commands are opt-in, read-only checks and require operator-supplied
+credentials plus a test project/repository; they are not executed in normal
+CI.
 
 ## Naming and public positioning
 

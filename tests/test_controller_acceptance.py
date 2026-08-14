@@ -44,6 +44,9 @@ class FakeBaseRevisionProvider:
         self.reads += 1
         return self.revision
 
+    def contains_revision(self, revision: str) -> bool:
+        return True
+
 
 class FakeWorkspaceFactory:
     def __init__(self) -> None:
@@ -249,6 +252,23 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
         self.assertEqual(decision.status, "approved")
         self.assertEqual(decision.warnings[0].code, "out_of_scope_diff")
 
+    def test_ci_in_progress_does_not_move_ticket_to_needs_attention(self) -> None:
+        simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
+        tracker = FakeTracker()
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=tracker,
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver({"CTRL-1": replace_delivery(ci_passed=False, ci_pending=True)}),
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement"})
+        decision = controller.reconcile("CTRL-1")
+
+        self.assertEqual(decision.status, "pending")
+        self.assertNotIn(("CTRL-1", WorkItemState.NEEDS_ATTENTION.value), tracker.transitions)
+
     def test_approved_delivery_refreshes_base_from_provider(self) -> None:
         simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
         provider = FakeBaseRevisionProvider("main-1")
@@ -266,6 +286,28 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(provider.reads, 1)
         self.assertEqual(controller._simulator.preview_ready(), ())
+
+    def test_merge_is_blocked_when_git_provider_cannot_prove_merge_revision_in_target(self) -> None:
+        class NonContainingProvider(FakeBaseRevisionProvider):
+            def contains_revision(self, revision: str) -> bool:
+                return False
+
+        simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
+        tracker = FakeTracker()
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=tracker,
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=FakeObserver({"CTRL-1": replace_delivery()}),
+            base_revision_provider=NonContainingProvider("main-1"),
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement"})
+        decision = controller.reconcile("CTRL-1")
+
+        self.assertEqual(decision.status, "blocked")
+        self.assertEqual(decision.failure.code, "merge_revision_not_in_target")
 
     def test_controller_persists_attempt_and_wave_contracts(self) -> None:
         simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")

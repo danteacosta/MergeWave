@@ -132,10 +132,38 @@ class MergeWaveSimulatorAcceptanceTests(unittest.TestCase):
 
         decision = simulator.evaluate_gate("A")
 
-        self.assertEqual(decision.status, "blocked")
+        self.assertEqual(decision.status, "pending")
         self.assertEqual(decision.failure.code, "stale_ci")
         self.assertTrue(decision.failure.agent_guidance)
         self.assertTrue(decision.failure.suggested_action)
+
+    def test_ci_in_progress_remains_pending(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "A", "blocked_by": []}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+        )
+        simulator.dispatch_ready()
+        simulator.observe_delivery("A", replace(valid_delivery("A"), ci_passed=False, ci_pending=True))
+
+        decision = simulator.evaluate_gate("A")
+
+        self.assertEqual(decision.status, "pending")
+        self.assertEqual(decision.failure.code, "ci_pending")
+
+    def test_review_waiting_for_approval_remains_pending(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "A", "blocked_by": []}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+        )
+        simulator.dispatch_ready()
+        simulator.observe_delivery("A", replace(valid_delivery("A"), approvals=0, merged=False, merge_revision=None))
+
+        decision = simulator.evaluate_gate("A")
+
+        self.assertEqual(decision.status, "pending")
+        self.assertEqual(decision.failure.code, "review_pending")
 
     def test_fresh_observation_can_recover_a_stale_ci_gate(self) -> None:
         simulator = MergeWaveSimulator(

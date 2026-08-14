@@ -21,6 +21,8 @@ class WorkAttempt:
     agent_runtime: str
     started_at: datetime
     state: str
+    supersedes_attempt_id: str | None = None
+    ended_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,7 @@ class PullRequest:
     reviews_resolved: bool
     merged: bool
     merge_commit_sha: str | None = None
+    attempt_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,7 @@ class ValidationEvidence:
     scope_check: str
     acceptance_criteria_signal: str
     collected_at: datetime
+    attempt_id: str | None = None
 
 
 @dataclass(frozen=True)
