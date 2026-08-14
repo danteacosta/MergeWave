@@ -54,11 +54,14 @@ class EventLogTests(unittest.TestCase):
         log.append("ticket.state_changed", {"item_id": "A", "state": "Done"}, idempotency_key="state:A")
         log.append("work_attempt.started", {"run_id": "run:A"}, idempotency_key="attempt:A")
         log.append("work_attempt.state_changed", {"run_id": "run:A", "state": "released"}, idempotency_key="attempt:A:released")
+        log.append("execution_wave.started", {"wave_id": "wave-1"}, idempotency_key="wave:1")
+        log.append("execution_wave.state_changed", {"wave_id": "wave-1", "state": "released"}, idempotency_key="wave:1:released")
 
         projection = ControllerProjection.from_event_log(log)
 
         self.assertEqual(projection.ticket_states["A"], "Done")
         self.assertEqual(projection.attempt_states["run:A"], "released")
+        self.assertEqual(projection.wave_states["wave-1"], "released")
 
     @staticmethod
     def _reduce(state: dict[str, object], event: EventRecord) -> dict[str, object]:
