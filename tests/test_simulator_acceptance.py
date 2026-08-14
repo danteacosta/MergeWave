@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 
-from mergewave.simulator import DeliveryObservation, MergeWaveSimulator
+from mergewave.simulator import DeliveryObservation, MergeWaveSimulator, ReviewPolicy
 
 
 def work_items() -> list[dict[str, object]]:
@@ -32,6 +32,7 @@ def valid_delivery(item_id: str, base_revision: str = "main-0") -> DeliveryObser
         merged=True,
         merge_revision=f"main-{item_id.lower()}",
         base_is_ancestor=True,
+        linked_to_ticket=True,
     )
 
 
@@ -183,6 +184,19 @@ class MergeWaveSimulatorAcceptanceTests(unittest.TestCase):
                 "gate.decided",
             ],
         )
+
+    def test_review_policy_requires_current_approvals_and_required_reviewer(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "A", "blocked_by": []}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+            review_policy=ReviewPolicy(required_approvals=2, required_reviewers=("security",)),
+        )
+        simulator.dispatch_ready()
+        observation = replace(valid_delivery("A"), approvals=2, required_reviewers_satisfied=False)
+        simulator.observe_delivery("A", observation)
+
+        self.assertEqual(simulator.evaluate_gate("A").failure.code, "required_reviewer_missing")
 
 
 if __name__ == "__main__":

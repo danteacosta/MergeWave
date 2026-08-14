@@ -9,9 +9,8 @@ first milestone is an offline deterministic simulator proving dependency-aware
 waves, merge-gated release, and the distinction between normal commits,
 workspace drift, and base-revision ancestry failures.
 
-The project is based on the [MergeWave simulator-first design](docs/superpowers/specs/2026-08-14-mergewave-design.md), which implements the
-authority and workspace invariants from the Merge-Gated, Dependency-Aware
-Agentic Delivery Control Plane specification.
+The project is based on the [MergeWave design](docs/superpowers/specs/2026-08-14-mergewave-design.md), which documents the implemented authority,
+workspace, event-recovery, and adapter contracts.
 
 The executable Work Item contract is defined in
 [docs/work-item.schema.json](docs/work-item.schema.json).
@@ -20,10 +19,10 @@ authoring example.
 
 ## Status
 
-Early development. The simulator and contract tests are the first acceptance
-gate. Linear, GitHub, and ACP adapters are available behind ports; the generic
-CLI runtime and ARP 3.0 recorder remain available for deployments that do not
-use those adapters.
+Early open-source implementation. The simulator and contract tests are the
+acceptance gate. Linear, GitHub, ACP, CLI, and ARP 3.0 adapters are available
+behind model-neutral ports; provider credentials and live merge operations are
+opt-in.
 
 The current offline slice includes:
 
@@ -37,6 +36,10 @@ The current offline slice includes:
 - GitHub delivery observer for PR, CI, review, scope, merge, and ancestry evidence;
 - ACP runtime adapter for model-neutral session/event transports;
 - delivery controller that composes scheduler, workspaces, runtime, tracker, and observer;
+- explicit `WorkAttempt`, `ExecutionWave`, `PullRequest`, `ValidationEvidence`, and `HumanGate` entities;
+- configurable current-review policy with required approvals and reviewers;
+- controller-driven reconciliation, automatic next-frontier dispatch, and event-log state projection;
+- stable failure classification for workspace, runtime, tracker, delivery, and reconciliation failures;
 - optional ARP 3.0 wire recording from controller runs, gate requests, evidence, and decisions;
 - deterministic simulator trace and CLI demo.
 

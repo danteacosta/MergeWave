@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.error import HTTPError
 
 from .contracts import DependencyGraph, WorkItem
+from .domain import ExecutionWave
 from .scheduler import Scheduler
 
 
@@ -31,6 +33,19 @@ class DeliveryObservation:
     linked_to_ticket: bool | None = None
     acceptance_criteria_signal: str = "unknown"
     merged_by: str | None = None
+    approval_reviewers: tuple[str, ...] = ()
+    changes_requested: bool = False
+    required_reviewers_satisfied: bool | None = None
+
+
+@dataclass(frozen=True)
+class ReviewPolicy:
+    required_approvals: int = 1
+    required_reviewers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.required_approvals < 1:
+            raise ValueError("required_approvals must be positive")
 
 
 @dataclass(frozen=True)
@@ -66,6 +81,25 @@ class GateDecision:
     warnings: tuple[FailureRecord, ...] = ()
 
 
+def classify_failure(error: BaseException, *, phase: str) -> FailureRecord:
+    """Normalize operational failures into the human-readable gate vocabulary."""
+    if isinstance(error, FileNotFoundError):
+        code, summary, retryable = "workspace_missing", "The assigned workspace no longer exists.", True
+    elif isinstance(error, HTTPError) and error.code in {401, 403}:
+        code, summary, retryable = "tracker_authentication_failed", "The provider rejected authentication.", False
+    elif isinstance(error, HTTPError) and error.code in {429, 500, 502, 503, 504}:
+        code, summary, retryable = "retry_exhaustion", "The external provider remained unavailable after retries.", True
+    elif isinstance(error, TimeoutError):
+        code, summary, retryable = "reconciliation_interrupted", "Reconciliation was interrupted before state was complete.", True
+    else:
+        code, summary, retryable = ("tracker_unavailable", str(error) or "An external operation failed.", True) if phase == "tracker" else ("reconciliation_interrupted", str(error) or "An external operation failed.", True)
+    return FailureRecord(
+        code, phase, "blocking", retryable, summary,
+        "Do not treat the incomplete observation as delivery evidence.",
+        "Retry reconciliation after the external dependency is healthy.",
+    )
+
+
 class MergeWaveSimulator:
     """Run the first MergeWave contract without external systems."""
 
@@ -77,6 +111,7 @@ class MergeWaveSimulator:
         base_revision: str,
         repository: str = "demo-repository",
         workspace_root: str = "/worktrees",
+        review_policy: ReviewPolicy | None = None,
     ) -> None:
         if policy not in {"continuous_frontier", "wave_barrier"}:
             raise ValueError(f"unsupported scheduling policy: {policy}")
@@ -97,6 +132,7 @@ class MergeWaveSimulator:
         )
         self._repository = repository
         self._workspace_root = workspace_root.rstrip("/")
+        self._review_policy = review_policy or ReviewPolicy()
         self._dispatched: dict[str, Dispatch] = {}
         self._observations: dict[str, DeliveryObservation] = {}
         self._decisions: dict[str, GateDecision] = {}
@@ -180,6 +216,12 @@ class MergeWaveSimulator:
     def trace(self) -> tuple[Event, ...]:
         return tuple(self._events)
 
+    def current_execution_wave(self) -> ExecutionWave | None:
+        return self._scheduler.current_execution_wave()
+
+    def execution_waves(self) -> tuple[ExecutionWave, ...]:
+        return self._scheduler.execution_waves()
+
     def refresh_target_base(self, revision: str) -> None:
         if self._policy == "wave_barrier" and (
             not self._active_wave
@@ -252,7 +294,7 @@ class MergeWaveSimulator:
                 "Wait for checks that target the current pull-request head before requesting release.",
                 "Refresh CI and re-evaluate the gate for the current head revision.",
             )
-        if observation.linked_to_ticket is False:
+        if observation.linked_to_ticket is not True:
             return FailureRecord(
                 "pull_request_unlinked", "delivery", "blocking", True,
                 "The pull request was not independently verified as linked to the work item.",
@@ -279,14 +321,21 @@ class MergeWaveSimulator:
                 "Inspect the failing check and repair the implementation before requesting release.",
                 "Fix CI failures and wait for a current green result.",
             )
-        if observation.reviews_resolved is False:
+        if observation.changes_requested or observation.reviews_resolved is False:
             return FailureRecord(
                 "review_changes_requested", "review", "blocking", True,
                 "A required review is unresolved or requested changes remain.",
                 "Resolve requested changes and obtain a current approval before release.",
                 "Reconcile review state after the author addresses the feedback.",
             )
-        if observation.approvals < 1:
+        if self._review_policy.required_reviewers and observation.required_reviewers_satisfied is not True:
+            return FailureRecord(
+                "required_reviewer_missing", "review", "blocking", True,
+                "A configured required reviewer has not approved the pull request.",
+                "Obtain approval from every reviewer configured by the delivery policy.",
+                "Request the missing reviewer approval and reconcile again.",
+            )
+        if observation.approvals < self._review_policy.required_approvals:
             return FailureRecord(
                 "review_pending",
                 "review",

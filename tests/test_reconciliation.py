@@ -26,6 +26,20 @@ class ReconciliationLoopTests(unittest.TestCase):
         self.assertEqual(first.event, second.event)
         self.assertEqual(len(log.events()), 1)
 
+    def test_controller_reconciliation_persists_the_gate_outcome(self) -> None:
+        class Controller:
+            def reconcile(self, item_id: str):
+                from mergewave.simulator import GateDecision
+
+                return GateDecision("blocked")
+
+        log = SqliteEventLog(":memory:")
+        self.addCleanup(log.close)
+        result = ReconciliationLoop(log).reconcile_controller(Controller(), "CTRL-1")
+
+        self.assertEqual(result.state["gate_status"], "blocked")
+        self.assertEqual(log.events()[-1].kind, "external_state.reconciled")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,9 @@ from collections.abc import Iterable, Sequence
 import subprocess
 from typing import Protocol, cast
 
+from .contracts import WorkItem
+from .git_workspace import Workspace
+
 
 @dataclass(frozen=True)
 class WorkerProfile:
@@ -32,8 +35,8 @@ class RunSpec:
     work_item_id: str
     prompt: str
     workspace_path: str
-    work_item: object | None = None
-    workspace: object | None = None
+    work_item: WorkItem | None = None
+    workspace: Workspace | None = None
     worker_profile: WorkerProfile | None = None
 
 
