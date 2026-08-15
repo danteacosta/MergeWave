@@ -16,7 +16,7 @@
 - [x] Persist prompt/snapshot references and ARP emission idempotency state so restart cannot duplicate portable records and can dispatch the next frontier without reconstructing prompts in memory
 - [x] Add runtime reattachment or explicit orphan handling after restart; ACP snapshots can reattach and non-reattachable processes become explicit orphans
 - [x] Add a long-lived supervisor that consumes runtime streams, applies timeout/cancellation/retry policy, and reconciles tracker/Git state continuously
-- [ ] Replace the provider-name launch-profile allowlist with a discoverable runtime-adapter registry and run one compatibility suite for ACP and CLI adapters, including Aider
+- [x] Replace the provider-name launch-profile allowlist with a discoverable runtime-adapter registry and run one compatibility suite for ACP and CLI adapters, including Aider
 - [ ] Add writable sandbox acceptance tests for real Git worktrees, GitHub PR/check/review observations, and Linear state transitions; current provider smoke tests are read-only
 - [x] Persist structured `FailureRecord` evidence IDs and mirror the same code, summary, guidance, and next action into tracker comments and agent continuation messages
 - [ ] Decide whether to implement the optional `soft_auto_merge` policy; keep it absent or disabled until authority, race, and reconciliation tests exist

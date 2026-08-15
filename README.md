@@ -45,7 +45,7 @@ The current offline slice includes:
 - durable prompt/project snapshot references and restart-safe ARP emission identities;
 - ACP session reattachment plus explicit orphan handling for non-reattachable runtimes;
 - a long-lived supervisor with bounded runtime retry and continuous delivery reconciliation;
-- ACP launch profiles for Codex, Claude Code, Gemini, and OpenHands without provider SDK coupling;
+- discoverable ACP/CLI runtime registry with Codex, Claude Code, Gemini, OpenHands, and Aider profiles without provider SDK coupling;
 - stable failure classification for workspace, runtime, tracker, delivery, and reconciliation failures;
 - content-addressed failure evidence mirrored to tracker comments and capable agent sessions;
 - optional ARP 3.0 wire recording from controller runs, gate requests, evidence, and decisions;
