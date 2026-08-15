@@ -8,6 +8,11 @@ import os
 import sys
 
 from .smoke import SmokeConfigurationError, github_read_only_smoke, linear_read_only_smoke
+from .live_acceptance import (
+    AcceptanceConfigurationError,
+    WritableAcceptanceConfig,
+    run_writable_acceptance,
+)
 from .simulator import MergeWaveSimulator
 
 
@@ -39,10 +44,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--demo", action="store_true", help="run the offline frontier demo")
     parser.add_argument("--linear-smoke", action="store_true", help="run a read-only Linear API smoke check")
     parser.add_argument("--github-smoke", action="store_true", help="run a read-only GitHub API smoke check")
+    parser.add_argument(
+        "--writable-acceptance",
+        action="store_true",
+        help="mutate explicitly disposable GitHub/Linear acceptance resources",
+    )
     args = parser.parse_args(argv)
-    modes = sum((args.demo, args.linear_smoke, args.github_smoke))
+    modes = sum((args.demo, args.linear_smoke, args.github_smoke, args.writable_acceptance))
     if modes != 1:
-        parser.error("choose exactly one of --demo, --linear-smoke, or --github-smoke")
+        parser.error(
+            "choose exactly one of --demo, --linear-smoke, --github-smoke, or --writable-acceptance"
+        )
     try:
         if args.demo:
             result = _demo()
@@ -51,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
                 os.environ.get("MERGEWAVE_LINEAR_API_KEY", ""),
                 os.environ.get("MERGEWAVE_LINEAR_TEAM_ID", ""),
             )
-        else:
+        elif args.github_smoke:
             result = github_read_only_smoke(
                 os.environ.get("MERGEWAVE_GITHUB_TOKEN", ""),
                 os.environ.get("MERGEWAVE_GITHUB_REPOSITORY", ""),
@@ -64,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
                     if path.strip()
                 ),
             )
-    except SmokeConfigurationError as error:
+        else:
+            result = run_writable_acceptance(WritableAcceptanceConfig.from_env())
+    except (SmokeConfigurationError, AcceptanceConfigurationError) as error:
         print(json.dumps({"error": "configuration", "message": str(error)}), file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True))

@@ -19,10 +19,12 @@ authoring example.
 
 ## Status
 
-Early open-source implementation. The simulator and contract tests are the
-acceptance gate. Linear, GitHub, ACP, CLI, and ARP 3.0 adapters are available
-behind model-neutral ports; provider credentials and live merge operations are
-opt-in.
+Early open-source implementation; this repository does not make a production
+v1 claim. The simulator and contract tests are the offline acceptance gate.
+Linear, GitHub, ACP, CLI, and ARP 3.0 adapters are available behind
+model-neutral ports; provider credentials and live operations are opt-in. Merge
+authority is fixed to `human_only`: MergeWave observes a human merge and has no
+auto-merge path.
 
 The current offline slice includes:
 
@@ -89,6 +91,16 @@ These are real provider checks when invoked with credentials. They are
 deliberately read-only: run them against a disposable Linear team and GitHub
 repository before enabling them in an operational environment. No credential
 or review body is printed.
+
+### Writable disposable-provider acceptance
+
+`mergewave --writable-acceptance` exercises a real Git worktree, an existing
+GitHub PR/check/review observation, and Linear state/link/comment mutations.
+It refuses to start unless the exact disposable-resource sentinel and every
+target are supplied, restores the Linear issue's configured original state,
+and removes its temporary worktree and branch. The linked PR attachment and
+acceptance comment intentionally remain as audit evidence on the disposable
+issue. See [the writable acceptance runbook](docs/writable-acceptance.md).
 
 The ARP integration is optional. Install ARP 3.x in the environment before
 constructing `Arp3Recorder`; the core remains usable without that dependency.

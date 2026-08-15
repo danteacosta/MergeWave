@@ -104,6 +104,22 @@ class FakeRecorder:
 
 
 class DeliveryControllerAcceptanceTests(unittest.TestCase):
+    def test_controller_rejects_auto_merge_authority(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "CTRL-1", "blocked_by": []}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+        )
+        with self.assertRaisesRegex(ValueError, "auto-merge is intentionally absent"):
+            DeliveryController(
+                simulator=simulator,
+                tracker=FakeTracker(),
+                workspace_factory=FakeWorkspaceFactory(),
+                runtime=FakeRuntime(),
+                observer=FakeObserver({}),
+                merge_authority="soft_auto_merge",
+            )
+
     def test_missing_prompt_is_rejected_before_scheduler_state_changes(self) -> None:
         simulator = MergeWaveSimulator(
             [{"id": "CTRL-1", "blocked_by": []}],

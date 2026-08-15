@@ -19,6 +19,11 @@ from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .git_provider import GitBaseRevisionProvider, GitProviderError
 from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
 from .linear_adapter import LinearGraphQLAdapter, LinearGraphQLTransport, UrllibLinearTransport
+from .live_acceptance import (
+    AcceptanceConfigurationError,
+    WritableAcceptanceConfig,
+    run_writable_acceptance,
+)
 from .persistence import EventRecord, IdempotencyConflictError, SqliteEventLog
 from .reliability import Arp3Contracts, Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
@@ -82,6 +87,9 @@ __all__ = [
     "GitHubTransport",
     "LinearGraphQLAdapter",
     "LinearGraphQLTransport",
+    "AcceptanceConfigurationError",
+    "WritableAcceptanceConfig",
+    "run_writable_acceptance",
     "MergeWaveSimulator",
     "ReviewPolicy",
     "RunHandle",

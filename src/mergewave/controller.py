@@ -153,7 +153,12 @@ class DeliveryController:
         event_log: SqliteEventLog | None = None,
         work_items: Mapping[str, WorkItem] | None = None,
         project_snapshot: ProjectSnapshot | None = None,
+        merge_authority: str = "human_only",
     ) -> None:
+        if merge_authority != "human_only":
+            raise ValueError(
+                "MergeWave supports merge_authority='human_only'; auto-merge is intentionally absent"
+            )
         self._simulator = simulator
         self._tracker = tracker
         self._workspace_factory = workspace_factory
@@ -182,6 +187,11 @@ class DeliveryController:
         self._waves: dict[str, ExecutionWave] = {}
         self._arp_emissions: set[str] = set()
         self._failure_records: dict[str, FailureRecord] = {}
+        self._merge_authority = merge_authority
+
+    @property
+    def merge_authority(self) -> str:
+        return self._merge_authority
 
     @classmethod
     def from_event_log(cls, *, event_log: SqliteEventLog, **kwargs: object) -> "DeliveryController":
