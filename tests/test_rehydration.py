@@ -7,7 +7,7 @@ from pathlib import Path
 from mergewave.controller import ControllerProjection, DeliveryController
 from mergewave.git_workspace import Workspace
 from mergewave.persistence import SqliteEventLog
-from mergewave.runtime import RunHandle, RunSpec
+from mergewave.runtime import RunHandle, RunSpec, RuntimeCapabilities
 from mergewave.simulator import DeliveryObservation, MergeWaveSimulator
 
 
@@ -39,6 +39,17 @@ class Runtime:
 
     def cancel(self, handle: RunHandle):
         return None
+
+
+class ReattachableRuntime(Runtime):
+    def snapshot(self, handle: RunHandle):
+        return {"session_id": "session-1"}
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(True, True, True, ("test",), True)
+
+    def reattach(self, run_id: str, snapshot: dict[str, object]) -> RunHandle:
+        return RunHandle(run_id, snapshot["session_id"])
 
 
 class Observer:
@@ -73,9 +84,37 @@ class RehydrationTests(unittest.TestCase):
             )
 
             self.assertEqual(second.active_item_ids(), ("CTRL-1",))
-            self.assertEqual(second.work_attempt("CTRL-1").state, "running")
+            self.assertEqual(second.work_attempt("CTRL-1").state, "orphaned")
+            self.assertFalse(second.active_assignment("CTRL-1").runtime_attached)
             self.assertEqual(second.active_assignment("CTRL-1").workspace.branch_ref, "mergewave/CTRL-1")
             self.assertEqual(second.reconcile("CTRL-1").status, "approved")
+            second_log.close()
+
+    def test_runtime_snapshot_and_prompt_are_restored_for_reattach_and_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "events.sqlite")
+            first_log = SqliteEventLog(database)
+            first = DeliveryController(
+                simulator=MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0"),
+                tracker=Tracker(), workspace_factory=WorkspaceFactory(), runtime=ReattachableRuntime(), observer=Observer(), event_log=first_log,
+            )
+            first.dispatch_ready({"CTRL-1": "Persist this exact prompt"})
+            projection = ControllerProjection.from_event_log(first_log)
+            self.assertEqual(projection.prompts["CTRL-1"]["prompt"], "Persist this exact prompt")
+            first_log.close()
+
+            second_log = SqliteEventLog(database)
+            runtime = ReattachableRuntime()
+            second = DeliveryController.from_event_log(
+                event_log=second_log,
+                simulator=MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0"),
+                tracker=Tracker(), workspace_factory=WorkspaceFactory(), runtime=runtime, observer=Observer(),
+            )
+
+            self.assertTrue(second.active_assignment("CTRL-1").runtime_attached)
+            self.assertEqual(second.active_assignment("CTRL-1").handle.runtime_ref, "session-1")
+            retry = second.retry("CTRL-1")
+            self.assertEqual(retry[0].attempt_number, 2)
             second_log.close()
 
     def test_wave_barrier_restores_scheduler_membership_for_base_refresh(self) -> None:

@@ -23,6 +23,7 @@ class ActiveAssignment:
     workspace: Workspace
     handle: RunHandle
     attempt: WorkAttempt
+    runtime_attached: bool = True
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,10 @@ class ControllerProjection:
     wave_records: Mapping[str, Mapping[str, object]]
     evidence_records: Mapping[str, Mapping[str, object]]
     pull_requests: Mapping[str, Mapping[str, object]]
+    prompts: Mapping[str, Mapping[str, object]]
+    project_snapshot: Mapping[str, object] | None
+    arp_emissions: frozenset[str]
+    failure_records: Mapping[str, Mapping[str, object]]
 
     @classmethod
     def from_event_log(cls, event_log: SqliteEventLog) -> "ControllerProjection":
@@ -44,6 +49,8 @@ class ControllerProjection:
             "ticket_states": {}, "base_revision": None, "attempt_states": {}, "wave_states": {},
             "attempt_records": {}, "active_assignments": {}, "gate_states": {},
             "wave_records": {}, "evidence_records": {}, "pull_requests": {},
+            "prompts": {}, "project_snapshot": None, "arp_emissions": set(),
+            "failure_records": {},
         }
         reduced = event_log.reduce(initial, cls._reduce)
         return cls(
@@ -57,6 +64,10 @@ class ControllerProjection:
             wave_records=reduced["wave_records"],
             evidence_records=reduced["evidence_records"],
             pull_requests=reduced["pull_requests"],
+            prompts=reduced["prompts"],
+            project_snapshot=reduced["project_snapshot"],
+            arp_emissions=frozenset(reduced["arp_emissions"]),
+            failure_records=reduced["failure_records"],
         )
 
     @staticmethod
@@ -73,6 +84,10 @@ class ControllerProjection:
             "wave_records": dict(state["wave_records"]),
             "evidence_records": dict(state["evidence_records"]),
             "pull_requests": dict(state["pull_requests"]),
+            "prompts": dict(state["prompts"]),
+            "project_snapshot": state["project_snapshot"],
+            "arp_emissions": set(state["arp_emissions"]),
+            "failure_records": dict(state["failure_records"]),
         }
         if event.kind == "ticket.state_changed":
             next_state["ticket_states"][payload["item_id"]] = payload["state"]
@@ -106,6 +121,14 @@ class ControllerProjection:
             next_state["evidence_records"][payload["item_id"]] = dict(payload["evidence"])
             if payload.get("pull_request"):
                 next_state["pull_requests"][payload["item_id"]] = dict(payload["pull_request"])
+        elif event.kind == "prompt.snapshot_recorded":
+            next_state["prompts"][payload["item_id"]] = dict(payload)
+        elif event.kind == "project.snapshot_recorded":
+            next_state["project_snapshot"] = dict(payload)
+        elif event.kind == "arp.emission_recorded":
+            next_state["arp_emissions"].add(payload["emission_id"])
+        elif event.kind == "failure.recorded":
+            next_state["failure_records"][payload["evidence_id"]] = dict(payload)
         return next_state
 
 
@@ -157,6 +180,8 @@ class DeliveryController:
         self._attempts: dict[str, WorkAttempt] = {}
         self._attempt_history: dict[str, list[WorkAttempt]] = {}
         self._waves: dict[str, ExecutionWave] = {}
+        self._arp_emissions: set[str] = set()
+        self._failure_records: dict[str, FailureRecord] = {}
 
     @classmethod
     def from_event_log(cls, *, event_log: SqliteEventLog, **kwargs: object) -> "DeliveryController":
@@ -166,6 +191,8 @@ class DeliveryController:
         return controller
 
     def dispatch_ready(self, prompts: Mapping[str, str]) -> tuple[Dispatch, ...]:
+        self._persist_prompt_snapshots(prompts)
+        self._persist_project_snapshot()
         dispatches = self._simulator.preview_ready()
         missing_prompts = [item.work_item_id for item in dispatches if item.work_item_id not in prompts]
         if missing_prompts:
@@ -206,6 +233,7 @@ class DeliveryController:
                     workspace=workspace,
                 )
             )
+            runtime_snapshot = self._runtime_snapshot(handle)
             if previous_attempt is not None:
                 self._attempt_history.setdefault(dispatch.work_item_id, []).append(previous_attempt)
             self._attempts[dispatch.work_item_id] = attempt
@@ -225,6 +253,7 @@ class DeliveryController:
                     "initial_head_revision": workspace.initial_head_revision,
                     "current_head_revision": workspace.current_head_revision,
                     "started_at": attempt.started_at.isoformat(),
+                    "runtime_snapshot": runtime_snapshot,
                 },
                 f"attempt:{handle.run_id}",
             )
@@ -249,18 +278,21 @@ class DeliveryController:
             self._set_ticket_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
             self._attention_state_published.add(item_id)
             self._append_event("reconciliation.failed", {"item_id": item_id, "failure_code": failure.code}, f"reconcile-failure:{item_id}:{failure.code}")
+            self._record_failure(item_id, failure)
             return GateDecision("blocked", failure)
         try:
             observation = self._observer.observe(item_id, workspace)
         except Exception as error:
             failure = classify_failure(error, phase="delivery")
             self._append_event("reconciliation.failed", {"item_id": item_id, "failure_code": failure.code}, f"reconcile-failure:{item_id}:{failure.code}")
+            self._record_failure(item_id, failure)
             return GateDecision("blocked", failure)
         try:
             observation = self._enrich_observation(item_id, observation)
         except Exception as error:
             failure = classify_failure(error, phase="tracker")
             self._append_event("reconciliation.failed", {"item_id": item_id, "failure_code": failure.code}, f"reconcile-failure:{item_id}:{failure.code}")
+            self._record_failure(item_id, failure)
             return GateDecision("blocked", failure)
         self._simulator.observe_delivery(item_id, observation)
         if observation.pr_head_sha and item_id not in self._review_state_published:
@@ -300,6 +332,8 @@ class DeliveryController:
             self._attention_state_published.add(item_id)
             self._attempts[item_id] = replace(self._attempts[item_id], state="needs_attention")
             self._append_event("work_attempt.state_changed", {"run_id": assignment.handle.run_id, "state": "needs_attention"}, f"attempt-state:{assignment.handle.run_id}:needs_attention")
+            if decision.failure is not None:
+                self._record_failure(item_id, decision.failure)
         return decision
 
     def refresh_target_base(self, revision: str | None = None) -> None:
@@ -319,6 +353,12 @@ class DeliveryController:
     def active_item_ids(self) -> tuple[str, ...]:
         return tuple(self._active)
 
+    def runtime_events(self, item_id: str) -> tuple[AgentEvent, ...]:
+        assignment = self.active_assignment(item_id)
+        if not assignment.runtime_attached:
+            return ()
+        return tuple(self._runtime.stream(assignment.handle))
+
     def retry(self, item_id: str, *, prompt: str | None = None) -> tuple[Dispatch, ...]:
         """Supersede one active attempt and create an isolated replacement."""
         assignment = self.active_assignment(item_id)
@@ -326,7 +366,8 @@ class DeliveryController:
         if previous.state == "released":
             raise ValueError(f"released item cannot be retried: {item_id}")
         try:
-            self._runtime.cancel(assignment.handle)
+            if assignment.runtime_attached:
+                self._runtime.cancel(assignment.handle)
             self._workspace_factory.destroy(assignment.workspace)
         except Exception as error:
             failure = classify_failure(error, phase="workspace")
@@ -361,7 +402,8 @@ class DeliveryController:
         assignment = self.active_assignment(item_id)
         if not reason.strip():
             raise ValueError("cancellation reason is required")
-        self._runtime.cancel(assignment.handle)
+        if assignment.runtime_attached:
+            self._runtime.cancel(assignment.handle)
         self._workspace_factory.destroy(assignment.workspace)
         self._simulator.cancel_from_wave(item_id, reason)
         self._active.pop(item_id, None)
@@ -420,6 +462,7 @@ class DeliveryController:
                 {"item_id": item_id, "failure_code": code},
                 f"runtime-failure:{item_id}:{code}",
             )
+            self._record_failure(item_id, failure)
             return failure
         return None
 
@@ -526,7 +569,8 @@ class DeliveryController:
         handle: RunHandle,
         attempt: WorkAttempt,
     ) -> None:
-        if self._recorder is None:
+        emission_id = f"run:{handle.run_id}"
+        if self._recorder is None or emission_id in self._arp_emissions:
             return
         if self._project_snapshot is None:
             prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -566,6 +610,7 @@ class DeliveryController:
                 "branch_ref": workspace.branch_ref,
             },
         )
+        self._record_arp_emission(emission_id, handle.run_id, "run")
 
     def _record_decision(self, item_id: str, handle: RunHandle, decision: GateDecision) -> None:
         if self._recorder is None:
@@ -580,7 +625,9 @@ class DeliveryController:
             f"evidence:{handle.run_id}:{observation_digest}:checks",
             f"evidence:{handle.run_id}:{observation_digest}:acceptance",
         )
-        if evidence_ids[0] not in self._recorded_evidence_ids:
+        if evidence_ids[0] not in self._recorded_evidence_ids and all(
+            f"evidence:{evidence_id}" not in self._arp_emissions for evidence_id in evidence_ids
+        ):
             evidence = self._validation_evidence[item_id]
             pull_request = self._pull_requests.get(item_id)
             revision_matches = bool(
@@ -633,13 +680,16 @@ class DeliveryController:
                 artifact_payload=artifact,
             )
             self._recorded_evidence_ids.update(evidence_ids)
+            for evidence_id in evidence_ids:
+                self._record_arp_emission(f"evidence:{evidence_id}", handle.run_id, "evidence")
 
         is_human_gate_ready = decision.status == "approved" or (
             decision.status == "pending"
             and decision.failure is not None
             and decision.failure.code == "merge_not_observed"
         )
-        if is_human_gate_ready and item_id not in self._gate_request_evidence:
+        gate_request_emission = f"gate-request:{self._gate_id(handle)}"
+        if is_human_gate_ready and item_id not in self._gate_request_evidence and gate_request_emission not in self._arp_emissions:
             authoritative_evidence_ids = evidence_ids[:2]
             self._gate_request_evidence[item_id] = authoritative_evidence_ids
             self._recorder.record_gate_request(
@@ -652,8 +702,10 @@ class DeliveryController:
                 capture_policy="metadata",
                 extensions=self._delivery_extensions(item_id),
             )
+            self._record_arp_emission(gate_request_emission, handle.run_id, "gate_request")
 
-        if decision.status == "approved" and self._recorded_decisions.get(item_id) != "approved":
+        gate_decision_emission = f"gate-decision:{self._gate_id(handle)}:approved"
+        if decision.status == "approved" and self._recorded_decisions.get(item_id) != "approved" and gate_decision_emission not in self._arp_emissions:
             self._recorded_decisions[item_id] = "approved"
             requested_evidence = self._gate_request_evidence.get(item_id, ())
             self._recorder.record_gate_decision(
@@ -667,6 +719,7 @@ class DeliveryController:
                 capture_policy="metadata",
                 extensions=self._delivery_extensions(item_id),
             )
+            self._record_arp_emission(gate_decision_emission, handle.run_id, "gate_decision")
 
     @staticmethod
     def _gate_id(handle: RunHandle) -> str:
@@ -675,6 +728,78 @@ class DeliveryController:
     def _append_event(self, kind: str, payload: Mapping[str, object], key: str) -> None:
         if self._event_log is not None:
             self._event_log.append(kind, payload, idempotency_key=key)
+
+    def _record_arp_emission(self, emission_id: str, run_id: str, kind: str) -> None:
+        self._arp_emissions.add(emission_id)
+        self._append_event(
+            "arp.emission_recorded",
+            {"emission_id": emission_id, "run_id": run_id, "kind": kind},
+            f"arp-emission:{emission_id}",
+        )
+
+    def _persist_prompt_snapshots(self, prompts: Mapping[str, str]) -> None:
+        for item_id, prompt in prompts.items():
+            digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            existing = self._prompts.get(item_id)
+            if existing is not None and existing != prompt:
+                raise ValueError(f"prompt snapshot changed for {item_id}")
+            self._prompts[item_id] = prompt
+            self._append_event(
+                "prompt.snapshot_recorded",
+                {
+                    "item_id": item_id,
+                    "prompt": prompt,
+                    "prompt_ref": f"urn:mergewave:work-item-prompt:{item_id}:{digest}",
+                    "prompt_hash": f"sha256:{digest}",
+                },
+                f"prompt:{item_id}:{digest}",
+            )
+
+    def _persist_project_snapshot(self) -> None:
+        if self._project_snapshot is None:
+            return
+        self._append_event(
+            "project.snapshot_recorded",
+            {"ref": self._project_snapshot.ref, "digest": self._project_snapshot.digest},
+            f"project-snapshot:{self._project_snapshot.digest}",
+        )
+
+    def _runtime_snapshot(self, handle: RunHandle) -> Mapping[str, object]:
+        snapshot = getattr(self._runtime, "snapshot", None)
+        if not callable(snapshot):
+            return {}
+        value = snapshot(handle)
+        return dict(value)
+
+    def _record_failure(self, item_id: str, failure: FailureRecord) -> str:
+        assignment = self._active.get(item_id)
+        run_id = assignment.handle.run_id if assignment is not None else item_id
+        payload = asdict(failure)
+        digest = hashlib.sha256(
+            json.dumps({"run_id": run_id, **payload}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        evidence_id = f"failure:{run_id}:{digest}"
+        if evidence_id in self._failure_records:
+            return evidence_id
+        self._failure_records[evidence_id] = failure
+        self._append_event(
+            "failure.recorded",
+            {"item_id": item_id, "run_id": run_id, "evidence_id": evidence_id, **payload},
+            evidence_id,
+        )
+        message = (
+            f"MergeWave failure `{failure.code}` ({evidence_id})\n\n"
+            f"{failure.human_summary}\n\nNext action: {failure.suggested_action}"
+        )
+        post_comment = getattr(self._tracker, "post_comment", None)
+        if callable(post_comment):
+            post_comment(item_id, message)
+        if assignment is not None and assignment.runtime_attached:
+            capabilities = getattr(self._runtime, "capabilities", None)
+            continue_run = getattr(self._runtime, "continue_run", None)
+            if callable(capabilities) and capabilities().supports_continue and callable(continue_run):
+                continue_run(assignment.handle, f"{failure.agent_guidance}\n{failure.suggested_action}")
+        return evidence_id
 
     def _delivery_artifact(self, item_id: str, handle: RunHandle) -> dict[str, object]:
         evidence = self._validation_evidence[item_id]
@@ -748,6 +873,42 @@ class DeliveryController:
             )
 
     def _rehydrate(self, projection: ControllerProjection) -> None:
+        if (
+            projection.project_snapshot is not None
+            and self._project_snapshot is not None
+            and projection.project_snapshot.get("digest") != self._project_snapshot.digest
+        ):
+            raise ValueError("project snapshot changed since the durable controller state was recorded")
+        self._prompts.update(
+            {
+                item_id: str(payload["prompt"])
+                for item_id, payload in projection.prompts.items()
+                if isinstance(payload.get("prompt"), str)
+            }
+        )
+        self._arp_emissions.update(projection.arp_emissions)
+        self._review_state_published.update(
+            item_id
+            for item_id, state in projection.ticket_states.items()
+            if state in {WorkItemState.IN_REVIEW.value, WorkItemState.NEEDS_ATTENTION.value, WorkItemState.DONE.value}
+        )
+        self._attention_state_published.update(
+            item_id
+            for item_id, state in projection.ticket_states.items()
+            if state == WorkItemState.NEEDS_ATTENTION.value
+        )
+        self._done_state_published.update(
+            item_id
+            for item_id, state in projection.ticket_states.items()
+            if state == WorkItemState.DONE.value
+        )
+        for payload in projection.failure_records.values():
+            evidence_id = str(payload["evidence_id"])
+            self._failure_records[evidence_id] = FailureRecord(
+                code=str(payload["code"]), phase=str(payload["phase"]), severity=str(payload["severity"]),
+                retryable=bool(payload["retryable"]), human_summary=str(payload["human_summary"]),
+                agent_guidance=str(payload["agent_guidance"]), suggested_action=str(payload["suggested_action"]),
+            )
         if projection.base_revision is not None:
             self._simulator.refresh_target_base(projection.base_revision)
         self._simulator.restore_released(
@@ -799,14 +960,36 @@ class DeliveryController:
                 worktree_path=workspace.worktree_path,
                 branch_ref=workspace.branch_ref,
             )
+            runtime_attached = False
+            handle = RunHandle(run_id, None)
+            capabilities = getattr(self._runtime, "capabilities", None)
+            reattach = getattr(self._runtime, "reattach", None)
+            runtime_snapshot = payload.get("runtime_snapshot", {})
+            if callable(capabilities) and capabilities().supports_reattach and callable(reattach) and isinstance(runtime_snapshot, Mapping):
+                try:
+                    handle = reattach(run_id, runtime_snapshot)
+                    runtime_attached = True
+                except Exception:
+                    runtime_attached = False
+            if not runtime_attached:
+                attempt = replace(attempt, state="orphaned")
+                self._append_event(
+                    "runtime.orphaned",
+                    {"item_id": item_id, "run_id": run_id, "reason": "runtime_not_reattachable"},
+                    f"runtime-orphaned:{run_id}",
+                )
             self._attempts[str(item_id)] = attempt
             self._active[str(item_id)] = ActiveAssignment(
-                dispatch, workspace, RunHandle(run_id, None), attempt
+                dispatch, workspace, handle, attempt, runtime_attached
             )
             self._simulator.restore_dispatch(
                 dispatch,
                 active_wave=str(item_id) in active_wave_items,
             )
+            restore_run = getattr(self._recorder, "restore_run", None)
+            if callable(restore_run) and f"run:{run_id}" in self._arp_emissions:
+                gate_requested = f"gate-request:{self._gate_id(handle)}" in self._arp_emissions
+                restore_run(run_id, sequence_number=3 if gate_requested else 2)
         self._recorded_decisions.update(projection.gate_states)
         for item_id, payload in projection.evidence_records.items():
             self._validation_evidence[item_id] = ValidationEvidence(

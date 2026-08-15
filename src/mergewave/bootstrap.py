@@ -63,7 +63,12 @@ def build_linear_application(
         base_revision=base_revision_provider.current_revision(),
         completed_item_ids=completed,
     )
-    controller = DeliveryController(
+    controller_factory = (
+        DeliveryController.from_event_log
+        if event_log is not None and event_log.events()
+        else DeliveryController
+    )
+    controller = controller_factory(
         simulator=simulator,
         tracker=tracker,
         workspace_factory=workspace_factory,

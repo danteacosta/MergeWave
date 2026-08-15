@@ -42,8 +42,12 @@ The current offline slice includes:
 - Linear bootstrap from executable ticket descriptions to a compiled DAG and live controller;
 - explicit attempt retry with workspace destruction, supersession, and isolated retry branches;
 - explicit human escape from `wave_barrier` plus controller restart rehydration;
+- durable prompt/project snapshot references and restart-safe ARP emission identities;
+- ACP session reattachment plus explicit orphan handling for non-reattachable runtimes;
+- a long-lived supervisor with bounded runtime retry and continuous delivery reconciliation;
 - ACP launch profiles for Codex, Claude Code, Gemini, and OpenHands without provider SDK coupling;
 - stable failure classification for workspace, runtime, tracker, delivery, and reconciliation failures;
+- content-addressed failure evidence mirrored to tracker comments and capable agent sessions;
 - optional ARP 3.0 wire recording from controller runs, gate requests, evidence, and decisions;
 - ARP 3.0 value-object mapping with contract validation, episode/lifecycle records, namespaced delivery extensions, and content-addressed evidence artifacts;
 - canonical project/DAG snapshot identity in ARP `source.input_ref` and `source.input_hash`;

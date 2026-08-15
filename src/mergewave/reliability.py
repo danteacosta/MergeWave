@@ -116,6 +116,13 @@ class Arp3Recorder:
         self._emit_lifecycle(run_id, "episode.started", extensions)
         self._emit_lifecycle(run_id, "execution.started", extensions)
 
+    def restore_run(self, run_id: str, *, sequence_number: int) -> None:
+        """Restore local lifecycle state without re-emitting portable records."""
+        if sequence_number < 0:
+            raise ValueError("sequence_number cannot be negative")
+        self._episode_by_run[run_id] = f"episode:{run_id}"
+        self._sequence_by_run[run_id] = sequence_number
+
     def record_evidence(
         self,
         *,

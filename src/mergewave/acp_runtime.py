@@ -22,7 +22,7 @@ class AcpAgentRuntime:
 
     def __init__(self, transport: AcpTransport, *, capabilities: RuntimeCapabilities | None = None) -> None:
         self._transport = transport
-        self._capabilities = capabilities or RuntimeCapabilities(True, True, True, ("acp",))
+        self._capabilities = capabilities or RuntimeCapabilities(True, True, True, ("acp",), True)
 
     def start(self, spec: RunSpec) -> RunHandle:
         response = self._transport.request(
@@ -66,6 +66,17 @@ class AcpAgentRuntime:
 
     def capabilities(self) -> RuntimeCapabilities:
         return self._capabilities
+
+    def snapshot(self, handle: RunHandle) -> Mapping[str, object]:
+        if not isinstance(handle.runtime_ref, str):
+            raise RuntimeError("ACP run handle does not contain a session_id")
+        return {"session_id": handle.runtime_ref}
+
+    def reattach(self, run_id: str, snapshot: Mapping[str, object]) -> RunHandle:
+        session_id = snapshot.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise RuntimeError("ACP runtime snapshot does not contain a session_id")
+        return RunHandle(run_id, session_id)
 
 
 class StdioAcpTransport:
