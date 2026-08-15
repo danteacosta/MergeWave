@@ -72,17 +72,27 @@ class AgentRuntime(Protocol):
 class CliAgentRuntime:
     """Execute any compatible agent command inside an assigned workspace."""
 
-    def __init__(self, command: Sequence[str], *, timeout_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        command: Sequence[str],
+        *,
+        timeout_seconds: float | None = None,
+        prompt_transport: str = "stdin",
+    ) -> None:
         if not command:
             raise ValueError("CLI runtime command cannot be empty")
         if timeout_seconds is not None and timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if prompt_transport not in {"stdin", "argument"}:
+            raise ValueError("prompt_transport must be stdin or argument")
         self._command = tuple(command)
         self._timeout_seconds = timeout_seconds
+        self._prompt_transport = prompt_transport
 
     def start(self, spec: RunSpec) -> RunHandle:
+        command = self._command + ((spec.prompt,) if self._prompt_transport == "argument" else ())
         process = subprocess.Popen(
-            self._command,
+            command,
             cwd=spec.workspace_path,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -92,7 +102,8 @@ class CliAgentRuntime:
         )
         if process.stdin is None:
             raise RuntimeError("CLI runtime did not expose stdin")
-        process.stdin.write(spec.prompt)
+        if self._prompt_transport == "stdin":
+            process.stdin.write(spec.prompt)
         process.stdin.close()
         return RunHandle(spec.run_id, process)
 

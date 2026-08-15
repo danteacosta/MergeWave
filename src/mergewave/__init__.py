@@ -23,7 +23,15 @@ from .persistence import EventRecord, IdempotencyConflictError, SqliteEventLog
 from .reliability import Arp3Contracts, Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec, RuntimeCapabilities, WorkerProfile, classify_runtime_event
-from .runtime_profiles import AcpProviderProfile, provider_profile, stdio_runtime
+from .runtime_profiles import (
+    AcpProviderProfile,
+    DEFAULT_RUNTIME_REGISTRY,
+    RuntimeAdapterProfile,
+    RuntimeAdapterRegistry,
+    provider_profile,
+    runtime_for,
+    stdio_runtime,
+)
 from .supervisor import DeliverySupervisor, SupervisionCycle, SupervisorPolicy
 from .scheduler import Scheduler
 from .smoke import SmokeConfigurationError, github_read_only_smoke, linear_read_only_smoke
@@ -45,6 +53,7 @@ __all__ = [
     "AcpAgentRuntime",
     "AcpTransport",
     "AcpProviderProfile",
+    "DEFAULT_RUNTIME_REGISTRY",
     "StdioAcpTransport",
     "ActiveAssignment",
     "ControllerProjection",
@@ -78,6 +87,8 @@ __all__ = [
     "RunHandle",
     "RunSpec",
     "RuntimeCapabilities",
+    "RuntimeAdapterProfile",
+    "RuntimeAdapterRegistry",
     "SupervisionCycle",
     "SupervisorPolicy",
     "ReconciliationLoop",
@@ -94,6 +105,7 @@ __all__ = [
     "WorkspaceDriftError",
     "WorkerProfile",
     "provider_profile",
+    "runtime_for",
     "stdio_runtime",
     "classify_runtime_event",
     "UrllibGitHubTransport",
