@@ -12,7 +12,7 @@
 
 ## Gaps before a production v1 claim
 
-- [ ] Bring the authoring validator to full schema/spec parity: strict nested types, minimum lengths, non-empty executable sections, additional-property rejection, imperative-title diagnostics, and test/migration/schema/foundation-only rejection
+- [x] Bring the authoring validator to full schema/spec parity: strict nested types, minimum lengths, non-empty executable sections, additional-property rejection, imperative-title diagnostics, and test/migration/schema/foundation-only rejection
 - [ ] Persist prompt/snapshot references and ARP emission idempotency state so restart cannot duplicate portable records and can dispatch the next frontier without reconstructing prompts in memory
 - [ ] Add runtime reattachment or explicit orphan handling after restart; a rehydrated `RunHandle` currently cannot continue or cancel the original process
 - [ ] Add a long-lived supervisor that consumes runtime streams, applies timeout/cancellation/retry policy, and reconciles tracker/Git state continuously

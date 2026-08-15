@@ -60,5 +60,12 @@
     "events": ["delivery.failure_recorded", "delivery.dispatch_suppressed"],
     "metrics": ["delivery.blocked_items_by_failure_code"]
   },
+  "requirements": {
+    "i18n": [],
+    "privacy": ["Do not copy provider payloads or credentials into tracker comments."],
+    "factories": ["Extend the work-item factory with deterministic failure evidence IDs."],
+    "migration": [],
+    "schema": []
+  },
   "state": "Ready"
 }

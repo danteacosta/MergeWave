@@ -7,6 +7,7 @@ from mergewave.contracts import (
     WorkItemValidationError,
     compile_dependency_graph,
     validate_work_item,
+    work_item_to_payload,
 )
 
 
@@ -30,6 +31,13 @@ def valid_item(item_id: str = "CTRL-1", blocked_by: list[str] | None = None) -> 
         "risk": {"level": "low", "reason": "The change is local."},
         "rollout": {"strategy": "Enable after simulator passes.", "kill_switch": "Disable the classifier."},
         "observability": {"events": ["delivery.failure_recorded"], "metrics": ["delivery.failures"]},
+        "requirements": {
+            "i18n": [],
+            "privacy": [],
+            "factories": [],
+            "migration": [],
+            "schema": [],
+        },
         "state": "Ready",
     }
 
@@ -79,6 +87,91 @@ class WorkItemContractTests(unittest.TestCase):
             validate_work_item(item)
 
         self.assertEqual(context.exception.issues[0].code, "invalid_blocker_id")
+
+    def test_unknown_top_level_and_nested_fields_are_rejected(self) -> None:
+        item = valid_item()
+        item["owner"] = "agent"
+        item["risk"]["probability"] = 0.5  # type: ignore[index]
+
+        with self.assertRaises(WorkItemValidationError) as context:
+            validate_work_item(item)
+
+        issue_fields = {issue.field for issue in context.exception.issues}
+        self.assertIn("owner", issue_fields)
+        self.assertIn("risk.probability", issue_fields)
+
+    def test_wrong_nested_types_are_reported_as_stable_issues(self) -> None:
+        item = valid_item()
+        item["scope"] = ["not", "an", "object"]
+
+        with self.assertRaises(WorkItemValidationError) as context:
+            validate_work_item(item)
+
+        issue = context.exception.issues[0]
+        self.assertEqual(issue.code, "invalid_object")
+        self.assertEqual(issue.field, "scope")
+        self.assertTrue(issue.suggested_correction)
+
+    def test_minimum_text_and_non_empty_executable_sections_are_enforced(self) -> None:
+        item = valid_item()
+        item["problem"] = "Too short"
+        item["affected_paths"] = []
+        item["acceptance_criteria"] = []
+        item["test_scenarios"] = []
+
+        with self.assertRaises(WorkItemValidationError) as context:
+            validate_work_item(item)
+
+        issue_codes = {issue.code for issue in context.exception.issues}
+        self.assertIn("text_too_short", issue_codes)
+        self.assertIn("empty_executable_section", issue_codes)
+
+    def test_non_imperative_title_is_rejected(self) -> None:
+        item = valid_item()
+        item["title"] = "Stable delivery failures are recorded"
+
+        with self.assertRaises(WorkItemValidationError) as context:
+            validate_work_item(item)
+
+        self.assertIn("title_not_imperative", {issue.code for issue in context.exception.issues})
+
+    def test_non_behavioral_standalone_work_items_are_rejected(self) -> None:
+        titles_and_codes = {
+            "Add unit tests for the delivery scheduler": "test_only_item",
+            "Create database migration for delivery state": "migration_only_item",
+            "Update API schema for delivery state": "schema_only_item",
+            "Build shared foundation for future delivery work": "foundation_only_item",
+        }
+        for title, expected_code in titles_and_codes.items():
+            with self.subTest(title=title):
+                item = valid_item()
+                item["title"] = title
+                with self.assertRaises(WorkItemValidationError) as context:
+                    validate_work_item(item)
+                self.assertIn(expected_code, {issue.code for issue in context.exception.issues})
+
+    def test_optional_cross_cutting_requirements_round_trip(self) -> None:
+        item = valid_item()
+        item["requirements"] = {
+            "i18n": ["Translate the operator-visible failure reason."],
+            "privacy": ["Redact provider credentials."],
+            "factories": ["Add a deterministic failure factory."],
+            "migration": ["Add the failure_code column."],
+            "schema": ["Expose failure_code as a required string."],
+        }
+
+        payload = work_item_to_payload(validate_work_item(item))
+
+        self.assertEqual(payload["requirements"], item["requirements"])
+
+    def test_migration_and_schema_requirements_cannot_be_split(self) -> None:
+        item = valid_item()
+        item["requirements"]["migration"] = ["Add the failure_code column."]  # type: ignore[index]
+
+        with self.assertRaises(WorkItemValidationError) as context:
+            validate_work_item(item)
+
+        self.assertIn("migration_schema_split", {issue.code for issue in context.exception.issues})
 
     def test_dependency_graph_reports_the_exact_cycle(self) -> None:
         items = [
