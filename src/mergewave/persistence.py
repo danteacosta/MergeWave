@@ -20,6 +20,10 @@ class EventRecord:
     idempotency_key: str
 
 
+class IdempotencyConflictError(RuntimeError):
+    """Raised when one key is reused for a different durable fact."""
+
+
 class SqliteEventLog:
     def __init__(self, database: str) -> None:
         self._connection = sqlite3.connect(database)
@@ -54,6 +58,10 @@ class SqliteEventLog:
         ).fetchone()
         if row is None:
             raise RuntimeError(f"event was not persisted: {idempotency_key}")
+        if row[1] != kind or row[2] != encoded_payload:
+            raise IdempotencyConflictError(
+                f"idempotency key {idempotency_key!r} already identifies a different event"
+            )
         return EventRecord(row[0], row[1], json.loads(row[2]), row[3])
 
     def events(self) -> tuple[EventRecord, ...]:

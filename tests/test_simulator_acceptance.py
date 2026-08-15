@@ -149,6 +149,7 @@ class MergeWaveSimulatorAcceptanceTests(unittest.TestCase):
         decision = simulator.evaluate_gate("A")
 
         self.assertEqual(decision.status, "pending")
+        self.assertEqual(simulator.trace()[-1].kind, "gate.pending")
         self.assertEqual(decision.failure.code, "ci_pending")
 
     def test_review_waiting_for_approval_remains_pending(self) -> None:

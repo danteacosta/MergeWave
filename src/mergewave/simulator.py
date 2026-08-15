@@ -219,7 +219,7 @@ class MergeWaveSimulator:
         self._decisions[item_id] = decision
         if decision.status == "approved":
             self._scheduler.release(item_id)
-        self._events.append(Event("gate.decided", item_id))
+        self._events.append(Event("gate.pending" if decision.status == "pending" else "gate.decided", item_id))
         return decision
 
     def can_refresh_target_base(self) -> bool:
