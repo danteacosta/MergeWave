@@ -17,7 +17,7 @@
 - [x] Add runtime reattachment or explicit orphan handling after restart; ACP snapshots can reattach and non-reattachable processes become explicit orphans
 - [x] Add a long-lived supervisor that consumes runtime streams, applies timeout/cancellation/retry policy, and reconciles tracker/Git state continuously
 - [x] Replace the provider-name launch-profile allowlist with a discoverable runtime-adapter registry and run one compatibility suite for ACP and CLI adapters, including Aider
-- [ ] Add writable sandbox acceptance tests for real Git worktrees, GitHub PR/check/review observations, and Linear state transitions; current provider smoke tests are read-only
+- [x] Add a fail-closed, opt-in writable sandbox acceptance command for real Git worktrees, GitHub PR/check/review observations, and reversible Linear state transitions; live execution remains operator-supplied release evidence
 - [x] Persist structured `FailureRecord` evidence IDs and mirror the same code, summary, guidance, and next action into tracker comments and agent continuation messages
-- [ ] Decide whether to implement the optional `soft_auto_merge` policy; keep it absent or disabled until authority, race, and reconciliation tests exist
-- [ ] Publish a reviewed branch and release only after the remaining v1 claims are either implemented or removed from public status text
+- [x] Keep `soft_auto_merge` absent: controller configuration accepts only `human_only` merge authority and tests reject auto-merge requests
+- [x] Remove the production-v1 claim from public status text; publication remains an early open-source release with live acceptance explicitly opt-in
