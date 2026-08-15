@@ -6,7 +6,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import json
 
-from .contracts import DependencyGraph, WorkItem, WorkItemState, compile_dependency_graph
+from .contracts import (
+    DependencyGraph,
+    WorkItem,
+    WorkItemState,
+    compile_dependency_graph,
+    work_item_to_payload,
+)
 from .controller import DeliveryController
 from .persistence import SqliteEventLog
 from .ports import BaseRevisionProvider, DeliveryObserver, ReliabilityRecorder, TrackerAdapter, WorkspaceFactory
@@ -118,23 +124,7 @@ def _normalize_state(value: object) -> str:
 
 
 def _prompt_for(item: WorkItem) -> str:
-    return json.dumps(
-        {
-            "id": item.item_id,
-            "title": item.title,
-            "problem": item.description,
-            "scope": {"in": item.scope_in, "out": item.scope_out},
-            "acceptance_criteria": item.acceptance_criteria,
-            "test_scenarios": item.test_scenarios,
-            "affected_paths": item.affected_paths,
-            "blocked_by": item.blocked_by,
-            "risk": item.risk_level,
-            "rollout": item.rollout_strategy,
-            "kill_switch": item.kill_switch,
-            "metrics": item.metrics,
-        },
-        sort_keys=True,
-    )
+    return json.dumps(work_item_to_payload(item), sort_keys=True)
 
 
 __all__ = ["LinearDeliveryApplication", "build_linear_application"]

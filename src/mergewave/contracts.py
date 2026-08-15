@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
+import json
 import re
 from typing import Iterable, Mapping
 
@@ -37,16 +39,48 @@ class WorkItem:
     blocked_by: tuple[str, ...]
     title: str = ""
     description: str = ""
+    behavior: str = ""
+    technical_context_summary: str = ""
+    technical_modules: tuple[str, ...] = ()
+    technical_constraints: tuple[str, ...] = ()
     scope_in: tuple[str, ...] = ()
     scope_out: tuple[str, ...] = ()
     acceptance_criteria: tuple[Mapping[str, object], ...] = ()
     test_scenarios: tuple[Mapping[str, object], ...] = ()
     affected_paths: tuple[str, ...] = ()
+    estimate_points: int = 1
     risk_level: str = "low"
+    risk_reason: str = ""
     rollout_strategy: str | None = None
     kill_switch: str | None = None
+    observability_events: tuple[str, ...] = ()
     metrics: tuple[str, ...] = ()
     state: WorkItemState = WorkItemState.READY
+
+
+@dataclass(frozen=True)
+class ProjectSnapshot:
+    """Canonical tracker/DAG input identity shared with reliability adapters."""
+
+    ref: str
+    digest: str
+    payload: Mapping[str, object]
+
+    @classmethod
+    def from_work_items(cls, items: Iterable[WorkItem]) -> "ProjectSnapshot":
+        payload: dict[str, object] = {
+            "work_items": [
+                work_item_to_payload(item)
+                for item in sorted(items, key=lambda candidate: candidate.item_id)
+            ]
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        hex_digest = hashlib.sha256(encoded).hexdigest()
+        return cls(
+            ref=f"urn:mergewave:project-snapshot:{hex_digest}",
+            digest=f"sha256:{hex_digest}",
+            payload=payload,
+        )
 
 
 class DependencyGraphError(ValueError):
@@ -163,17 +197,53 @@ def validate_work_item(raw: Mapping[str, object]) -> WorkItem:
         blocked_by=tuple(blocked_by),
         title=str(raw["title"]),
         description=str(raw["problem"]),
+        behavior=str(raw["behavior"]),
+        technical_context_summary=str(technical_context["summary"]),
+        technical_modules=tuple(str(value) for value in technical_context["modules"]),
+        technical_constraints=tuple(str(value) for value in technical_context["constraints"]),
         scope_in=tuple(str(value) for value in scope["in"]),
         scope_out=tuple(str(value) for value in scope["out"]),
         acceptance_criteria=tuple(raw["acceptance_criteria"]),
         test_scenarios=tuple(raw["test_scenarios"]),
         affected_paths=tuple(str(value) for value in raw["affected_paths"]),
+        estimate_points=estimate_points,
         risk_level=str(risk["level"]),
+        risk_reason=str(risk["reason"]),
         rollout_strategy=str(rollout["strategy"]),
         kill_switch=str(rollout["kill_switch"]),
+        observability_events=tuple(str(value) for value in observability["events"]),
         metrics=tuple(str(value) for value in observability["metrics"]),
         state=WorkItemState(state),
     )
+
+
+def work_item_to_payload(item: WorkItem) -> dict[str, object]:
+    """Return the complete executable ticket contract without lossy remapping."""
+
+    return {
+        "id": item.item_id,
+        "title": item.title,
+        "problem": item.description,
+        "scope": {"in": list(item.scope_in), "out": list(item.scope_out)},
+        "behavior": item.behavior,
+        "technical_context": {
+            "summary": item.technical_context_summary,
+            "modules": list(item.technical_modules),
+            "constraints": list(item.technical_constraints),
+        },
+        "affected_paths": list(item.affected_paths),
+        "acceptance_criteria": [dict(value) for value in item.acceptance_criteria],
+        "test_scenarios": [dict(value) for value in item.test_scenarios],
+        "blocked_by": list(item.blocked_by),
+        "estimate_points": item.estimate_points,
+        "risk": {"level": item.risk_level, "reason": item.risk_reason},
+        "rollout": {"strategy": item.rollout_strategy, "kill_switch": item.kill_switch},
+        "observability": {
+            "events": list(item.observability_events),
+            "metrics": list(item.metrics),
+        },
+        "state": item.state.value,
+    }
 
 
 def compile_dependency_graph(raw_items: Iterable[Mapping[str, object]]) -> DependencyGraph:
