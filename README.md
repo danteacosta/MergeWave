@@ -45,7 +45,10 @@ The current offline slice includes:
 - ACP launch profiles for Codex, Claude Code, Gemini, and OpenHands without provider SDK coupling;
 - stable failure classification for workspace, runtime, tracker, delivery, and reconciliation failures;
 - optional ARP 3.0 wire recording from controller runs, gate requests, evidence, and decisions;
-- ARP 3.0 value-object mapping with contract validation, namespaced delivery extensions, and content-addressed evidence artifacts;
+- ARP 3.0 value-object mapping with contract validation, episode/lifecycle records, namespaced delivery extensions, and content-addressed evidence artifacts;
+- canonical project/DAG snapshot identity in ARP `source.input_ref` and `source.input_hash`;
+- human gate requests emitted only after independently observed delivery evidence is ready for merge review;
+- CI contract testing against the current ARP repository in addition to the optional packaged dependency;
 - deterministic simulator trace and CLI demo.
 
 ## Development
@@ -85,6 +88,9 @@ or review body is printed.
 
 The ARP integration is optional. Install ARP 3.x in the environment before
 constructing `Arp3Recorder`; the core remains usable without that dependency.
+The repository CI also checks the adapter directly against
+`danteacosta/agent-reliability-protocol@main` so cross-repository contract drift
+cannot be hidden by the adapter's fake-contract unit tests.
 
 ## License
 

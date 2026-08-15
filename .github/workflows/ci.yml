@@ -26,3 +26,21 @@ jobs:
         run: PYTHONWARNINGS=error python -m unittest discover -s tests -v
       - name: Compile sources
         run: python -m compileall -q src tests
+
+  arp-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mergewave
+      - uses: actions/checkout@v4
+        with:
+          repository: danteacosta/agent-reliability-protocol
+          ref: main
+          path: agent-reliability-protocol
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate MergeWave against ARP main
+        working-directory: mergewave
+        run: PYTHONPATH=src:../agent-reliability-protocol/src PYTHONWARNINGS=error python -m unittest discover -s tests -v

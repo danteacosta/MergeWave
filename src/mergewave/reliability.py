@@ -30,6 +30,8 @@ class Arp3Contracts:
     """
 
     RunManifestV3: type
+    EpisodeIdentityV3: type
+    LifecycleEventV3: type
     SourceIdentity: type
     ExecutorIdentity: type
     EvidenceRecord: type
@@ -45,6 +47,8 @@ class Arp3Contracts:
         v3 = importlib.import_module("agent_reliability_protocol.v3")
         return cls(
             RunManifestV3=v3.RunManifest,
+            EpisodeIdentityV3=v3.EpisodeIdentity,
+            LifecycleEventV3=v3.LifecycleEvent,
             SourceIdentity=v3.SourceIdentity,
             ExecutorIdentity=v3.ExecutorIdentity,
             EvidenceRecord=v3.EvidenceRecord,
@@ -71,6 +75,8 @@ class Arp3Recorder:
         self._sink = sink
         self._contracts = contracts or Arp3Contracts.load()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._sequence_by_run: dict[str, int] = {}
+        self._episode_by_run: dict[str, str] = {}
 
     def record_run(
         self,
@@ -103,6 +109,12 @@ class Arp3Recorder:
             extensions=self._extensions(extensions),
         )
         self._emit("manifest", manifest.to_dict(), "manifest")
+        episode_id = f"episode:{run_id}"
+        self._episode_by_run[run_id] = episode_id
+        episode = c.EpisodeIdentityV3(run_id=run_id, episode_id=episode_id)
+        self._emit("episode", episode.to_dict(), "episode")
+        self._emit_lifecycle(run_id, "episode.started", extensions)
+        self._emit_lifecycle(run_id, "execution.started", extensions)
 
     def record_evidence(
         self,
@@ -173,6 +185,8 @@ class Arp3Recorder:
             extensions=self._extensions(extensions),
         )
         self._emit("gate.decision", gate_decision.to_dict(), "decision")
+        self._emit_lifecycle(run_id, "gate.decided", extensions)
+        self._emit_lifecycle(run_id, "episode.completed", extensions)
 
     def record_gate_request(
         self,
@@ -199,12 +213,39 @@ class Arp3Recorder:
             extensions=self._extensions(extensions),
         )
         self._emit("gate.request", gate_request.to_dict(), "gate-request")
+        self._emit_lifecycle(run_id, "gate.requested", extensions)
 
     def _emit(self, kind: str, payload: dict[str, object], contract_kind: str) -> None:
         errors = self._contracts.check_contract(contract_kind, payload)
         if errors:
             raise ValueError(f"invalid ARP 3.0 {contract_kind}: {'; '.join(errors)}")
         self._sink.write(kind, payload)
+
+    def _emit_lifecycle(
+        self,
+        run_id: str,
+        checkpoint: str,
+        extensions: Mapping[str, object] | None,
+    ) -> None:
+        try:
+            episode_id = self._episode_by_run[run_id]
+        except KeyError as error:
+            raise ValueError(f"ARP run was not recorded before lifecycle event: {run_id}") from error
+        sequence = self._sequence_by_run.get(run_id, 0)
+        observed_at = self._now()
+        event = self._contracts.LifecycleEventV3(
+            event_id=f"event:{run_id}:{sequence}:{checkpoint}",
+            run_id=run_id,
+            episode_id=episode_id,
+            sequence_number=sequence,
+            checkpoint=checkpoint,
+            started_at=observed_at,
+            ended_at=observed_at,
+            attributes={},
+            extensions=self._extensions(extensions),
+        )
+        self._emit("lifecycle", event.to_dict(), "event")
+        self._sequence_by_run[run_id] = sequence + 1
 
     def _materialize_artifact(
         self,

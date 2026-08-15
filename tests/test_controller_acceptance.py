@@ -196,10 +196,90 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(decision.status, "approved")
         call_names = [name for name, _ in recorder.calls]
-        self.assertEqual(call_names, ["record_run", "record_gate_request", "record_evidence", "record_evidence", "record_gate_decision"])
+        self.assertEqual(
+            call_names,
+            [
+                "record_run",
+                "record_evidence",
+                "record_evidence",
+                "record_evidence",
+                "record_gate_request",
+                "record_gate_decision",
+            ],
+        )
         gate_decision = recorder.calls[-1][1]
         self.assertEqual(gate_decision["decision_authority"], "human")
         self.assertEqual(gate_decision["decision"], "approved")
+
+    def test_arp_gate_request_waits_until_delivery_is_ready_for_human_merge(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "CTRL-1", "blocked_by": []}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+        )
+        recorder = FakeRecorder()
+        observer = FakeObserver({"CTRL-1": replace_delivery(ci_passed=False, ci_pending=True)})
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=FakeTracker(),
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=observer,
+            recorder=recorder,
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement first"})
+        controller.reconcile("CTRL-1")
+
+        self.assertNotIn("record_gate_request", [name for name, _ in recorder.calls])
+        observer.observations["CTRL-1"] = replace_delivery(merged=False, merge_revision=None)
+        controller.reconcile("CTRL-1")
+        self.assertEqual(
+            [name for name, _ in recorder.calls].count("record_gate_request"),
+            1,
+        )
+        gate_request = next(payload for name, payload in recorder.calls if name == "record_gate_request")
+        self.assertEqual(len(gate_request["required_evidence_ids"]), 2)
+        self.assertTrue(
+            all(not str(evidence_id).endswith(":acceptance") for evidence_id in gate_request["required_evidence_ids"])
+        )
+
+    def test_arp_evidence_ids_are_content_addressed_per_observation(self) -> None:
+        simulator = MergeWaveSimulator(
+            [{"id": "CTRL-1", "blocked_by": []}],
+            policy="continuous_frontier",
+            base_revision="main-0",
+        )
+        recorder = FakeRecorder()
+        observer = FakeObserver({"CTRL-1": replace_delivery(merged=False, merge_revision=None)})
+        controller = DeliveryController(
+            simulator=simulator,
+            tracker=FakeTracker(),
+            workspace_factory=FakeWorkspaceFactory(),
+            runtime=FakeRuntime(),
+            observer=observer,
+            recorder=recorder,
+        )
+
+        controller.dispatch_ready({"CTRL-1": "Implement first"})
+        controller.reconcile("CTRL-1")
+        controller.reconcile("CTRL-1")
+        first_ids = [
+            call["evidence_id"]
+            for name, call in recorder.calls
+            if name == "record_evidence"
+        ]
+        self.assertEqual(len(first_ids), 3)
+
+        observer.observations["CTRL-1"] = replace_delivery()
+        controller.reconcile("CTRL-1")
+        all_ids = [
+            call["evidence_id"]
+            for name, call in recorder.calls
+            if name == "record_evidence"
+        ]
+        self.assertEqual(len(all_ids), 6)
+        self.assertEqual(len(set(all_ids)), 6)
 
     def test_runtime_timeout_routes_item_to_needs_attention(self) -> None:
         simulator = MergeWaveSimulator([{"id": "CTRL-1", "blocked_by": []}], policy="continuous_frontier", base_revision="main-0")
@@ -334,6 +414,7 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
             base_revision="main-0",
         )
         workspaces = FakeWorkspaceFactory()
+        recorder = FakeRecorder()
         controller = DeliveryController(
             simulator=simulator,
             tracker=FakeTracker(),
@@ -341,12 +422,18 @@ class DeliveryControllerAcceptanceTests(unittest.TestCase):
             runtime=FakeRuntime(),
             observer=FakeObserver({"CTRL-1": replace_delivery()}),
             base_revision_provider=FakeBaseRevisionProvider("main-1"),
+            recorder=recorder,
         )
 
         controller.dispatch_ready({"CTRL-1": "First", "CTRL-2": "Second"})
         controller.reconcile("CTRL-1")
 
         self.assertEqual(controller.active_assignment("CTRL-2").dispatch.base_revision, "main-1")
+        self.assertEqual(controller.active_item_ids(), ("CTRL-2",))
+        first_decision = next(
+            payload for name, payload in recorder.calls if name == "record_gate_decision"
+        )
+        self.assertEqual(first_decision["extensions"]["wave_id"], "wave-1")
 
 
 def replace_delivery(**changes: object) -> DeliveryObservation:

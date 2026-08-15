@@ -8,6 +8,7 @@ import json
 
 from .contracts import (
     DependencyGraph,
+    ProjectSnapshot,
     WorkItem,
     WorkItemState,
     compile_dependency_graph,
@@ -54,6 +55,7 @@ def build_linear_application(
     payloads = tuple(_candidate_payload(candidate) for candidate in candidates)
     graph = compile_dependency_graph(payloads)
     work_items = graph.items
+    project_snapshot = ProjectSnapshot.from_work_items(work_items.values())
     completed = tuple(item.item_id for item in work_items.values() if item.state is WorkItemState.DONE)
     simulator = MergeWaveSimulator(
         [{"id": item.item_id, "blocked_by": list(item.blocked_by)} for item in work_items.values()],
@@ -71,6 +73,7 @@ def build_linear_application(
         base_revision_provider=base_revision_provider,
         event_log=event_log,
         work_items=work_items,
+        project_snapshot=project_snapshot,
     )
     prompts = {
         item.item_id: _prompt_for(item)

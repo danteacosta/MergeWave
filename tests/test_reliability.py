@@ -47,6 +47,8 @@ class FakeV3Value(FakeValue):
 
 class FakeContracts:
     RunManifestV3 = FakeV3Value
+    EpisodeIdentityV3 = FakeV3Value
+    LifecycleEventV3 = FakeV3Value
     SourceIdentity = FakeValue
     ExecutorIdentity = FakeValue
     EvidenceRecord = FakeV3Value
@@ -86,6 +88,11 @@ class Arp3RecorderTests(unittest.TestCase):
         self.assertIn("created_at", document)
         self.assertIn("environment", document)
         self.assertEqual(document["extensions"], {"software-delivery/v1": {"work_item_id": "CTRL-1"}})
+        self.assertEqual([kind for kind, _ in sink.documents], ["manifest", "episode", "lifecycle", "lifecycle"])
+        self.assertEqual(
+            [document["checkpoint"] for kind, document in sink.documents if kind == "lifecycle"],
+            ["episode.started", "execution.started"],
+        )
 
     def test_evidence_uses_valid_stage_and_emits_content_addressed_artifact(self) -> None:
         recorder, sink = self.recorder()
@@ -111,6 +118,12 @@ class Arp3RecorderTests(unittest.TestCase):
     def test_gate_request_is_pending_and_decision_uses_arp_vocabulary(self) -> None:
         recorder, sink = self.recorder()
 
+        recorder.record_run(
+            run_id="run-1", base_revision="main-0", input_ref="graph", input_hash="sha256:graph",
+            executor_name="runtime", executor_version="1", configuration_hash="sha256:config",
+            capture_policy="metadata",
+        )
+
         recorder.record_gate_request(
             gate_id="gate-1",
             run_id="run-1",
@@ -134,12 +147,18 @@ class Arp3RecorderTests(unittest.TestCase):
             decided_at="2026-08-14T00:01:00+00:00",
         )
 
-        request = sink.documents[0][1]
-        decision = sink.documents[1][1]
+        request = next(document for kind, document in sink.documents if kind == "gate.request")
+        decision = next(document for kind, document in sink.documents if kind == "gate.decision")
         self.assertEqual(request["requested_at"], "2026-08-14T00:00:00+00:00")
         self.assertNotIn("status", request)
         self.assertEqual(decision["decision"], "block")
         self.assertEqual(decision["decided_at"], "2026-08-14T00:01:00+00:00")
+        lifecycle = [document for kind, document in sink.documents if kind == "lifecycle"]
+        self.assertEqual(
+            [event["checkpoint"] for event in lifecycle],
+            ["episode.started", "execution.started", "gate.requested", "gate.decided", "episode.completed"],
+        )
+        self.assertEqual([event["sequence_number"] for event in lifecycle], list(range(5)))
 
     def test_pending_decision_is_not_emitted(self) -> None:
         recorder, sink = self.recorder()
