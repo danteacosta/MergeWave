@@ -24,6 +24,7 @@ from .reliability import Arp3Contracts, Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec, RuntimeCapabilities, WorkerProfile, classify_runtime_event
 from .runtime_profiles import AcpProviderProfile, provider_profile, stdio_runtime
+from .supervisor import DeliverySupervisor, SupervisionCycle, SupervisorPolicy
 from .scheduler import Scheduler
 from .smoke import SmokeConfigurationError, github_read_only_smoke, linear_read_only_smoke
 from .simulator import (
@@ -54,6 +55,7 @@ __all__ = [
     "CliAgentRuntime",
     "DeliveryObservation",
     "DeliveryController",
+    "DeliverySupervisor",
     "ExecutionWave",
     "GateStatus",
     "HumanGate",
@@ -76,6 +78,8 @@ __all__ = [
     "RunHandle",
     "RunSpec",
     "RuntimeCapabilities",
+    "SupervisionCycle",
+    "SupervisorPolicy",
     "ReconciliationLoop",
     "ReconciliationResult",
     "Scheduler",

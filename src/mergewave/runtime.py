@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import subprocess
 from typing import Protocol, cast
 
@@ -27,6 +27,7 @@ class RuntimeCapabilities:
     supports_streaming: bool
     supports_cancel: bool
     transports: tuple[str, ...] = ()
+    supports_reattach: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,10 @@ class AgentRuntime(Protocol):
     def cancel(self, handle: RunHandle) -> AgentEvent: ...
 
     def capabilities(self) -> RuntimeCapabilities: ...
+
+    def snapshot(self, handle: RunHandle) -> Mapping[str, object]: ...
+
+    def reattach(self, run_id: str, snapshot: Mapping[str, object]) -> RunHandle: ...
 
 
 class CliAgentRuntime:
@@ -118,6 +123,10 @@ class CliAgentRuntime:
 
     def capabilities(self) -> RuntimeCapabilities:
         return RuntimeCapabilities(False, True, True, ("subprocess",))
+
+    def snapshot(self, handle: RunHandle) -> Mapping[str, object]:
+        process = cast(subprocess.Popen[str], handle.runtime_ref)
+        return {"pid": process.pid, "reattachable": False}
 
     def _stream_with_timeout(self, process: subprocess.Popen[str]) -> Iterable[AgentEvent]:
         timed_out = False
