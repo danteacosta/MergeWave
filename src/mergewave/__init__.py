@@ -3,11 +3,13 @@
 from .contracts import (
     DependencyGraph,
     DependencyGraphError,
+    ProjectSnapshot,
     ValidationIssue,
     WorkItem,
     WorkItemValidationError,
     compile_dependency_graph,
     validate_work_item,
+    work_item_to_payload,
 )
 from .acp_runtime import AcpAgentRuntime, AcpTransport, StdioAcpTransport
 from .controller import ActiveAssignment, ControllerProjection, DeliveryController
@@ -17,7 +19,7 @@ from .git_workspace import GitWorkspaceFactory, Workspace, WorkspaceDriftError
 from .git_provider import GitBaseRevisionProvider, GitProviderError
 from .github_adapter import GitHubDeliveryObserver, GitHubTransport, UrllibGitHubTransport
 from .linear_adapter import LinearGraphQLAdapter, LinearGraphQLTransport, UrllibLinearTransport
-from .persistence import EventRecord, SqliteEventLog
+from .persistence import EventRecord, IdempotencyConflictError, SqliteEventLog
 from .reliability import Arp3Contracts, Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec, RuntimeCapabilities, WorkerProfile, classify_runtime_event
@@ -37,6 +39,7 @@ from .simulator import (
 __all__ = [
     "DependencyGraph",
     "DependencyGraphError",
+    "ProjectSnapshot",
     "AgentEvent",
     "AcpAgentRuntime",
     "AcpTransport",
@@ -58,6 +61,7 @@ __all__ = [
     "Dispatch",
     "Event",
     "EventRecord",
+    "IdempotencyConflictError",
     "FailureRecord",
     "GateDecision",
     "GitWorkspaceFactory",
@@ -94,4 +98,5 @@ __all__ = [
     "github_read_only_smoke",
     "linear_read_only_smoke",
     "validate_work_item",
+    "work_item_to_payload",
 ]

@@ -78,6 +78,43 @@ class RehydrationTests(unittest.TestCase):
             self.assertEqual(second.reconcile("CTRL-1").status, "approved")
             second_log.close()
 
+    def test_wave_barrier_restores_scheduler_membership_for_base_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "events.sqlite")
+            first_log = SqliteEventLog(database)
+            first = DeliveryController(
+                simulator=MergeWaveSimulator(
+                    [{"id": "CTRL-1", "blocked_by": []}],
+                    policy="wave_barrier",
+                    base_revision="main-0",
+                ),
+                tracker=Tracker(),
+                workspace_factory=WorkspaceFactory(),
+                runtime=Runtime(),
+                observer=Observer(),
+                event_log=first_log,
+            )
+            first.dispatch_ready({"CTRL-1": "Implement"})
+            first_log.close()
+
+            second_log = SqliteEventLog(database)
+            second = DeliveryController.from_event_log(
+                event_log=second_log,
+                simulator=MergeWaveSimulator(
+                    [{"id": "CTRL-1", "blocked_by": []}],
+                    policy="wave_barrier",
+                    base_revision="main-0",
+                ),
+                tracker=Tracker(),
+                workspace_factory=WorkspaceFactory(),
+                runtime=Runtime(),
+                observer=Observer(),
+            )
+
+            self.assertEqual(second.reconcile("CTRL-1").status, "approved")
+            second.refresh_target_base("main-1")
+            second_log.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mergewave.persistence import EventRecord, SqliteEventLog
+from mergewave.persistence import EventRecord, IdempotencyConflictError, SqliteEventLog
 from mergewave.controller import ControllerProjection
 
 
@@ -36,6 +36,22 @@ class EventLogTests(unittest.TestCase):
         self.assertEqual([event.sequence for event in events], [1, 2])
         self.assertIsInstance(events[0], EventRecord)
         self.assertEqual(events[1].kind, "delivery.observed")
+
+    def test_idempotency_key_collision_rejects_contradictory_state(self) -> None:
+        log = SqliteEventLog(":memory:")
+        self.addCleanup(log.close)
+        log.append(
+            "gate.decided",
+            {"item_id": "A", "status": "approved"},
+            idempotency_key="gate:A",
+        )
+
+        with self.assertRaises(IdempotencyConflictError):
+            log.append(
+                "gate.decided",
+                {"item_id": "A", "status": "blocked"},
+                idempotency_key="gate:A",
+            )
 
     def test_event_log_reduces_events_into_recoverable_state(self) -> None:
         log = SqliteEventLog(":memory:")
