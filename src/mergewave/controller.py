@@ -9,7 +9,7 @@ import hashlib
 import json
 
 from .domain import ExecutionWave, HumanGate, PullRequest, ValidationEvidence, WorkAttempt
-from .contracts import WorkItem, WorkItemState
+from .contracts import ProjectSnapshot, WorkItem, WorkItemState
 from .git_workspace import Workspace, WorkspaceDriftError
 from .persistence import SqliteEventLog
 from .ports import BaseRevisionProvider, DeliveryObserver, ReliabilityRecorder, TrackerAdapter, WorkspaceFactory
@@ -100,7 +100,7 @@ class ControllerProjection:
             record = dict(next_state["wave_records"].get(payload["wave_id"], {}))
             record["state"] = payload["state"]
             next_state["wave_records"][payload["wave_id"]] = record
-        elif event.kind == "gate.decided":
+        elif event.kind in {"gate.decided", "gate.pending"}:
             next_state["gate_states"][payload["item_id"]] = payload["status"]
         elif event.kind == "validation.evidence_recorded":
             next_state["evidence_records"][payload["item_id"]] = dict(payload["evidence"])
@@ -129,6 +129,7 @@ class DeliveryController:
         base_revision_provider: BaseRevisionProvider | None = None,
         event_log: SqliteEventLog | None = None,
         work_items: Mapping[str, WorkItem] | None = None,
+        project_snapshot: ProjectSnapshot | None = None,
     ) -> None:
         self._simulator = simulator
         self._tracker = tracker
@@ -139,10 +140,15 @@ class DeliveryController:
         self._base_revision_provider = base_revision_provider
         self._event_log = event_log
         self._work_items = work_items or {}
+        self._project_snapshot = project_snapshot or (
+            ProjectSnapshot.from_work_items(self._work_items.values()) if self._work_items else None
+        )
         self._prompts: dict[str, str] = {}
         self._active: dict[str, ActiveAssignment] = {}
         self._review_state_published: set[str] = set()
         self._recorded_decisions: dict[str, str] = {}
+        self._recorded_evidence_ids: set[str] = set()
+        self._gate_request_evidence: dict[str, tuple[str, ...]] = {}
         self._validation_evidence: dict[str, ValidationEvidence] = {}
         self._human_gates: dict[str, HumanGate] = {}
         self._pull_requests: dict[str, PullRequest] = {}
@@ -204,7 +210,7 @@ class DeliveryController:
                 self._attempt_history.setdefault(dispatch.work_item_id, []).append(previous_attempt)
             self._attempts[dispatch.work_item_id] = attempt
             self._active[dispatch.work_item_id] = ActiveAssignment(dispatch, workspace, handle, attempt)
-            self._record_run_and_gate_request(dispatch, workspace, prompts[dispatch.work_item_id], handle)
+            self._record_run(dispatch, workspace, prompts[dispatch.work_item_id], handle, attempt)
             self._append_event(
                 "work_attempt.started",
                 {
@@ -263,12 +269,29 @@ class DeliveryController:
         decision = self._simulator.evaluate_gate(item_id)
         self._record_domain_evidence(item_id, observation, decision)
         self._record_wave_state()
+        self._record_decision(item_id, assignment.handle, decision)
+        self._append_event(
+            "gate.pending" if decision.status == "pending" else "gate.decided",
+            {"item_id": item_id, "status": decision.status, "failure": decision.failure.code if decision.failure else None},
+            ":".join(
+                (
+                    "gate",
+                    assignment.handle.run_id,
+                    decision.status,
+                    decision.failure.code if decision.failure else "none",
+                    observation.pr_head_sha or "no-head",
+                    observation.ci_head_sha or "no-ci-head",
+                    observation.merge_revision or "no-merge",
+                )
+            ),
+        )
         if decision.status == "approved":
             if item_id not in self._done_state_published:
                 self._set_ticket_state(item_id, WorkItemState.DONE.value)
                 self._done_state_published.add(item_id)
                 self._attempts[item_id] = replace(self._attempts[item_id], state="released")
                 self._append_event("work_attempt.state_changed", {"run_id": assignment.handle.run_id, "state": "released"}, f"attempt-state:{assignment.handle.run_id}:released")
+            self._active.pop(item_id, None)
             if self._base_revision_provider and self._simulator.can_refresh_target_base():
                 self.refresh_target_base()
                 self._dispatch_next_frontier()
@@ -277,12 +300,6 @@ class DeliveryController:
             self._attention_state_published.add(item_id)
             self._attempts[item_id] = replace(self._attempts[item_id], state="needs_attention")
             self._append_event("work_attempt.state_changed", {"run_id": assignment.handle.run_id, "state": "needs_attention"}, f"attempt-state:{assignment.handle.run_id}:needs_attention")
-        self._record_decision(item_id, assignment.handle, decision)
-        self._append_event(
-            "gate.decided",
-            {"item_id": item_id, "status": decision.status, "failure": decision.failure.code if decision.failure else None},
-            f"gate:{assignment.handle.run_id}:{decision.status}",
-        )
         return decision
 
     def refresh_target_base(self, revision: str | None = None) -> None:
@@ -447,6 +464,29 @@ class DeliveryController:
             collected_at=now,
             attempt_id=self._active[item_id].attempt.id,
         )
+        pull_request = None
+        if observation.pr_head_sha:
+            pull_request = PullRequest(
+                observation.pr_id,
+                item_id,
+                observation.pr_url,
+                observation.pr_head_sha,
+                observation.base_sha_at_open or observation.base_revision,
+                "pending" if observation.ci_pending else ("passing" if observation.ci_passed else "failing"),
+                observation.ci_head_sha,
+                evidence.reviews_resolved,
+                observation.merged,
+                observation.merge_revision,
+                self._active[item_id].attempt.id,
+            )
+        previous_evidence = self._validation_evidence.get(item_id)
+        previous_pull_request = self._pull_requests.get(item_id)
+        if (
+            previous_evidence is not None
+            and replace(evidence, collected_at=previous_evidence.collected_at) == previous_evidence
+            and pull_request == previous_pull_request
+        ):
+            evidence = previous_evidence
         self._validation_evidence[item_id] = evidence
         self._human_gates[item_id] = HumanGate(
             item_id,
@@ -455,20 +495,8 @@ class DeliveryController:
             observation.merged_by,
             now if decision.status == "approved" and observation.merged else None,
         )
-        if observation.pr_head_sha:
-            self._pull_requests[item_id] = PullRequest(
-                observation.pr_id,
-                item_id,
-                observation.pr_url,
-                observation.pr_head_sha,
-                observation.base_sha_at_open or observation.base_revision,
-                "passing" if observation.ci_passed else "failing",
-                observation.ci_head_sha,
-                evidence.reviews_resolved,
-                observation.merged,
-                observation.merge_revision,
-                self._active[item_id].attempt.id,
-            )
+        if pull_request is not None:
+            self._pull_requests[item_id] = pull_request
         evidence_payload = json.loads(
             json.dumps(
                 {
@@ -481,101 +509,168 @@ class DeliveryController:
                 sort_keys=True,
             )
         )
+        event_digest = hashlib.sha256(
+            json.dumps(evidence_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         self._append_event(
             "validation.evidence_recorded",
             evidence_payload,
-            f"validation:{self._active[item_id].handle.run_id}:{observation.pr_head_sha}:{decision.status}:{evidence.acceptance_criteria_signal}",
+            f"validation:{self._active[item_id].handle.run_id}:{event_digest}",
         )
 
-    def _record_run_and_gate_request(
+    def _record_run(
         self,
         dispatch: Dispatch,
         workspace: Workspace,
         prompt: str,
         handle: RunHandle,
+        attempt: WorkAttempt,
     ) -> None:
         if self._recorder is None:
             return
-        input_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if self._project_snapshot is None:
+            prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            input_ref = f"urn:mergewave:work-item-prompt:{dispatch.work_item_id}:{prompt_digest}"
+            input_hash = f"sha256:{prompt_digest}"
+        else:
+            input_ref = self._project_snapshot.ref
+            input_hash = self._project_snapshot.digest
         configuration_hash = hashlib.sha256(
-            type(self._runtime).__qualname__.encode("utf-8")
+            json.dumps(
+                {
+                    "runtime": type(self._runtime).__qualname__,
+                    "scheduling_policy": self._simulator.scheduling_policy,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
         ).hexdigest()
+        wave = self._simulator.current_execution_wave()
         self._recorder.record_run(
             run_id=handle.run_id,
             base_revision=dispatch.base_revision,
-            input_ref=dispatch.work_item_id,
+            input_ref=input_ref,
             input_hash=input_hash,
             executor_name=type(self._runtime).__qualname__,
             executor_version="1",
-            configuration_hash=configuration_hash,
+            configuration_hash=f"sha256:{configuration_hash}",
             capture_policy="metadata",
             environment={"runtime": type(self._runtime).__qualname__},
             extensions={
                 "work_item_id": dispatch.work_item_id,
+                "attempt_id": attempt.id,
+                "wave_id": wave.wave_id if wave is not None else None,
+                "workspace_id": workspace.workspace_id,
                 "repository": workspace.repository,
                 "worktree_path": workspace.worktree_path,
                 "branch_ref": workspace.branch_ref,
             },
         )
-        self._recorder.record_gate_request(
-            gate_id=self._gate_id(handle),
-            run_id=handle.run_id,
-            checkpoint="merge",
-            policy_version="mergewave/v0.1",
-            decision_authority="human",
-            required_evidence_ids=[self._evidence_id(handle)],
-            capture_policy="metadata",
-        )
 
     def _record_decision(self, item_id: str, handle: RunHandle, decision: GateDecision) -> None:
-        if self._recorder is None or self._recorded_decisions.get(item_id) == decision.status:
+        if self._recorder is None:
             return
-        self._recorded_decisions[item_id] = decision.status
-        self._recorder.record_evidence(
-            evidence_id=self._evidence_id(handle),
-            run_id=handle.run_id,
-            claim="delivery_gate_status",
-            observed=decision.status,
-            expected="approved",
-            comparator="equals",
-            stage="final_artifact",
-            capture_policy="metadata",
-            artifact_payload=self._delivery_artifact(item_id, handle),
+
+        artifact = self._delivery_artifact(item_id, handle)
+        observation_identity = {key: value for key, value in artifact.items() if key != "observed_at"}
+        encoded = json.dumps(observation_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        observation_digest = hashlib.sha256(encoded).hexdigest()
+        evidence_ids = (
+            f"evidence:{handle.run_id}:{observation_digest}:revision",
+            f"evidence:{handle.run_id}:{observation_digest}:checks",
+            f"evidence:{handle.run_id}:{observation_digest}:acceptance",
         )
-        self._recorder.record_evidence(
-            evidence_id=f"{self._evidence_id(handle)}:acceptance",
-            run_id=handle.run_id,
-            claim="acceptance_criteria_signal",
-            observed=self._validation_evidence[item_id].acceptance_criteria_signal,
-            expected="complete",
-            comparator="informational",
-            stage="pre_final",
-            capture_policy="metadata",
-            artifact_payload=self._delivery_artifact(item_id, handle),
+        if evidence_ids[0] not in self._recorded_evidence_ids:
+            evidence = self._validation_evidence[item_id]
+            pull_request = self._pull_requests.get(item_id)
+            revision_matches = bool(
+                pull_request
+                and evidence.base_sha_verified
+                and evidence.ci_verified_against_head
+            )
+            required_checks_satisfied = bool(
+                pull_request
+                and (
+                    decision.status == "approved"
+                    or (
+                        decision.status == "pending"
+                        and decision.failure is not None
+                        and decision.failure.code == "merge_not_observed"
+                    )
+                )
+            )
+            self._recorder.record_evidence(
+                evidence_id=evidence_ids[0],
+                run_id=handle.run_id,
+                claim="artifact_matches_expected_revision",
+                observed=revision_matches,
+                expected=True,
+                comparator="equals",
+                stage="final_artifact",
+                capture_policy="metadata",
+                artifact_payload=artifact,
+            )
+            self._recorder.record_evidence(
+                evidence_id=evidence_ids[1],
+                run_id=handle.run_id,
+                claim="required_checks_satisfied",
+                observed=required_checks_satisfied,
+                expected=True,
+                comparator="equals",
+                stage="final_artifact",
+                capture_policy="metadata",
+                artifact_payload=artifact,
+            )
+            self._recorder.record_evidence(
+                evidence_id=evidence_ids[2],
+                run_id=handle.run_id,
+                claim="acceptance_criteria_signal",
+                observed=evidence.acceptance_criteria_signal,
+                expected="complete",
+                comparator="informational",
+                stage="pre_final",
+                capture_policy="metadata",
+                artifact_payload=artifact,
+            )
+            self._recorded_evidence_ids.update(evidence_ids)
+
+        is_human_gate_ready = decision.status == "approved" or (
+            decision.status == "pending"
+            and decision.failure is not None
+            and decision.failure.code == "merge_not_observed"
         )
-        if decision.status != "pending":
-            reasons = ()
-            if decision.failure is not None:
-                reasons = ((decision.failure.code, decision.failure.human_summary),)
-            self._recorder.record_gate_decision(
+        if is_human_gate_ready and item_id not in self._gate_request_evidence:
+            authoritative_evidence_ids = evidence_ids[:2]
+            self._gate_request_evidence[item_id] = authoritative_evidence_ids
+            self._recorder.record_gate_request(
                 gate_id=self._gate_id(handle),
                 run_id=handle.run_id,
-                decision=decision.status,
                 checkpoint="merge",
                 policy_version="mergewave/v0.1",
                 decision_authority="human",
-                evidence_ids=[self._evidence_id(handle), f"{self._evidence_id(handle)}:acceptance"],
+                required_evidence_ids=authoritative_evidence_ids,
                 capture_policy="metadata",
-                reasons=reasons,
+                extensions=self._delivery_extensions(item_id),
+            )
+
+        if decision.status == "approved" and self._recorded_decisions.get(item_id) != "approved":
+            self._recorded_decisions[item_id] = "approved"
+            requested_evidence = self._gate_request_evidence.get(item_id, ())
+            self._recorder.record_gate_decision(
+                gate_id=self._gate_id(handle),
+                run_id=handle.run_id,
+                decision="approved",
+                checkpoint="merge",
+                policy_version="mergewave/v0.1",
+                decision_authority="human",
+                evidence_ids=tuple(dict.fromkeys((*requested_evidence, *evidence_ids))),
+                capture_policy="metadata",
+                extensions=self._delivery_extensions(item_id),
             )
 
     @staticmethod
     def _gate_id(handle: RunHandle) -> str:
         return f"gate:{handle.run_id}"
-
-    @staticmethod
-    def _evidence_id(handle: RunHandle) -> str:
-        return f"evidence:{handle.run_id}:delivery"
 
     def _append_event(self, kind: str, payload: Mapping[str, object], key: str) -> None:
         if self._event_log is not None:
@@ -588,14 +683,36 @@ class DeliveryController:
             json.dumps(
                 {
                     "work_item_id": item_id,
-                    "attempt_id": handle.run_id,
-                    "validation_evidence": asdict(evidence),
-                    "pull_request": asdict(pull_request) if pull_request else None,
+                    "attempt_id": self._active[item_id].attempt.id,
+                    "base_revision": self._active[item_id].dispatch.base_revision,
+                    "head_revision": pull_request.head_sha if pull_request else None,
+                    "ci_checked_revision": pull_request.ci_checked_head_sha if pull_request else None,
+                    "ci_status": pull_request.ci_status if pull_request else "unknown",
+                    "reviews_resolved": evidence.reviews_resolved,
+                    "scope_check": evidence.scope_check,
+                    "acceptance_criteria_signal": evidence.acceptance_criteria_signal,
+                    "merged": pull_request.merged if pull_request else False,
+                    "merge_revision": pull_request.merge_commit_sha if pull_request else None,
+                    "observed_at": evidence.collected_at,
                 },
                 default=str,
                 sort_keys=True,
             )
         )
+
+    def _delivery_extensions(self, item_id: str) -> dict[str, object]:
+        assignment = self._active[item_id]
+        wave = self._simulator.current_execution_wave()
+        pull_request = self._pull_requests.get(item_id)
+        return {
+            "work_item_id": item_id,
+            "attempt_id": assignment.attempt.id,
+            "wave_id": wave.wave_id if wave is not None else None,
+            "workspace_id": assignment.workspace.workspace_id,
+            "pull_request_ref": pull_request.url if pull_request else None,
+            "head_revision": pull_request.head_sha if pull_request else None,
+            "merge_revision": pull_request.merge_commit_sha if pull_request else None,
+        }
 
     def _set_ticket_state(self, item_id: str, state: str) -> None:
         self._tracker.transition_state(item_id, state)
@@ -640,6 +757,7 @@ class DeliveryController:
                 if state in {WorkItemState.DONE.value, WorkItemState.CANCELLED.value}
             )
         )
+        active_wave_items: set[str] = set()
         for wave_id, payload in projection.wave_records.items():
             wave = ExecutionWave(
                 wave_id=str(wave_id),
@@ -649,6 +767,8 @@ class DeliveryController:
             )
             self._waves[wave.wave_id] = wave
             self._simulator.restore_execution_wave(wave)
+            if wave.state == "active":
+                active_wave_items.update(wave.work_item_ids)
         for item_id, payload in projection.active_assignments.items():
             run_id = str(payload["run_id"])
             started_at = datetime.fromisoformat(str(payload["started_at"]))
@@ -683,7 +803,10 @@ class DeliveryController:
             self._active[str(item_id)] = ActiveAssignment(
                 dispatch, workspace, RunHandle(run_id, None), attempt
             )
-            self._simulator.restore_dispatch(dispatch)
+            self._simulator.restore_dispatch(
+                dispatch,
+                active_wave=str(item_id) in active_wave_items,
+            )
         self._recorded_decisions.update(projection.gate_states)
         for item_id, payload in projection.evidence_records.items():
             self._validation_evidence[item_id] = ValidationEvidence(

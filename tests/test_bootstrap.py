@@ -66,6 +66,17 @@ class Observer:
     def observe(self, item_id: str, workspace: Workspace): raise AssertionError("not reached")
 
 
+class Recorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def __getattr__(self, name: str):
+        def record(**kwargs: object) -> None:
+            self.calls.append((name, kwargs))
+
+        return record
+
+
 class BootstrapTests(unittest.TestCase):
     def test_bootstrap_validates_ticket_contract_compiles_dag_and_creates_controller(self) -> None:
         raw_a = work_item("CTRL-1", [])
@@ -118,6 +129,34 @@ class BootstrapTests(unittest.TestCase):
         reversed_order = ProjectSnapshot.from_work_items(reversed(tuple(application.work_items.values())))
         self.assertEqual(expected, reversed_order)
         self.assertTrue(expected.ref.endswith(expected.digest.removeprefix("sha256:")))
+
+    def test_bootstrap_records_the_canonical_project_snapshot_in_arp(self) -> None:
+        raw_a = work_item("CTRL-1", [])
+        raw_b = work_item("CTRL-2", ["CTRL-1"])
+        recorder = Recorder()
+        application = build_linear_application(
+            tracker=Tracker(
+                [
+                    {"id": "CTRL-1", "blocked_by": [], "state": "Todo", "work_item": raw_a},
+                    {"id": "CTRL-2", "blocked_by": ["CTRL-1"], "state": "Todo", "work_item": raw_b},
+                ]
+            ),
+            base_revision_provider=Base(),
+            workspace_factory=WorkspaceFactory(),
+            runtime=Runtime(),
+            observer=Observer(),
+            policy="wave_barrier",
+            recorder=recorder,
+        )
+
+        application.start()
+
+        run = next(payload for name, payload in recorder.calls if name == "record_run")
+        expected = ProjectSnapshot.from_work_items(application.work_items.values())
+        self.assertEqual(run["input_ref"], expected.ref)
+        self.assertEqual(run["input_hash"], expected.digest)
+        self.assertEqual(run["extensions"]["wave_id"], "wave-1")
+        self.assertEqual(run["extensions"]["workspace_id"], "CTRL-1")
 
 
 if __name__ == "__main__": unittest.main()

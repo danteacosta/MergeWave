@@ -146,6 +146,10 @@ class MergeWaveSimulator:
         self._active_wave: set[str] = set()
         self._attempt_numbers: dict[str, int] = {}
 
+    @property
+    def scheduling_policy(self) -> str:
+        return self._policy
+
     def dispatch_ready(self) -> tuple[Dispatch, ...]:
         ready = []
         for scheduled in self._scheduler.dispatch_ready():
