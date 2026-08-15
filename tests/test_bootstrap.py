@@ -4,6 +4,7 @@ import json
 import unittest
 
 from mergewave.bootstrap import build_linear_application
+from mergewave.contracts import ProjectSnapshot
 from mergewave.git_workspace import Workspace
 from mergewave.runtime import RunHandle, RunSpec
 
@@ -82,6 +83,12 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(set(application.graph.items), {"CTRL-1", "CTRL-2"})
         self.assertEqual(tuple(dispatch.work_item_id for dispatch in application.start()), ("CTRL-1",))
         self.assertIn("CTRL-1", application.controller.active_item_ids())
+        prompt = json.loads(application.prompts["CTRL-1"])
+        self.assertEqual(prompt["behavior"], raw_a["behavior"])
+        self.assertEqual(prompt["technical_context"], raw_a["technical_context"])
+        self.assertEqual(prompt["estimate_points"], raw_a["estimate_points"])
+        self.assertEqual(prompt["risk"], raw_a["risk"])
+        self.assertEqual(prompt["observability"], raw_a["observability"])
 
     def test_bootstrap_rejects_a_non_executable_linear_description(self) -> None:
         with self.assertRaisesRegex(ValueError, "work-item JSON contract"):
@@ -89,6 +96,28 @@ class BootstrapTests(unittest.TestCase):
                 tracker=Tracker([{"id": "CTRL-1", "description": "just a title", "blocked_by": [], "state": "Todo"}]),
                 base_revision_provider=Base(), workspace_factory=WorkspaceFactory(), runtime=Runtime(), observer=Observer(), policy="continuous_frontier",
             )
+
+    def test_project_snapshot_is_canonical_and_content_addressed(self) -> None:
+        raw_a = work_item("CTRL-1", [])
+        raw_b = work_item("CTRL-2", ["CTRL-1"])
+        application = build_linear_application(
+            tracker=Tracker(
+                [
+                    {"id": "CTRL-1", "blocked_by": [], "state": "Todo", "work_item": raw_a},
+                    {"id": "CTRL-2", "blocked_by": ["CTRL-1"], "state": "Todo", "work_item": raw_b},
+                ]
+            ),
+            base_revision_provider=Base(),
+            workspace_factory=WorkspaceFactory(),
+            runtime=Runtime(),
+            observer=Observer(),
+            policy="wave_barrier",
+        )
+
+        expected = ProjectSnapshot.from_work_items(application.work_items.values())
+        reversed_order = ProjectSnapshot.from_work_items(reversed(tuple(application.work_items.values())))
+        self.assertEqual(expected, reversed_order)
+        self.assertTrue(expected.ref.endswith(expected.digest.removeprefix("sha256:")))
 
 
 if __name__ == "__main__": unittest.main()
