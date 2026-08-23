@@ -9,6 +9,15 @@ first milestone is an offline deterministic simulator proving dependency-aware
 waves, merge-gated release, and the distinction between normal commits,
 workspace drift, and base-revision ancestry failures.
 
+## Research boundary
+
+MergeWave is a separate software-delivery control-plane demonstrator. It is not
+the master's primary experimental harness, a producer of confirmatory H1/H2
+rows, or evidence that pre-final provenance improves defect detection. Its ARP
+`software-delivery/v1` records may demonstrate interoperability and industrial
+transfer, but they MUST NOT be pooled with the `agent-smell-degradation/v1`
+dataset or used to qualify the thesis runtime producer.
+
 The project is based on the [MergeWave design](docs/superpowers/specs/2026-08-14-mergewave-design.md), which documents the implemented authority,
 workspace, event-recovery, and adapter contracts.
 
