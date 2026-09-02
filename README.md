@@ -46,6 +46,8 @@ The current offline slice includes:
 - Linear GraphQL tracker adapter with explicit blocker mapping;
 - GitHub delivery observer for PR, CI, review, scope, merge, and ancestry evidence;
 - ACP runtime adapter for model-neutral session/event transports;
+- versioned skill invocations on `RunSpec` with ACP propagation;
+- skill-result validation and immutable event-log bindings to attempts, workspaces, and artifact references;
 - delivery controller that composes scheduler, workspaces, runtime, tracker, and observer;
 - explicit `WorkAttempt`, `ExecutionWave`, `PullRequest`, `ValidationEvidence`, and `HumanGate` entities;
 - configurable current-review policy with required approvals and reviewers;
@@ -116,6 +118,20 @@ constructing `Arp3Recorder`; the core remains usable without that dependency.
 The repository CI also checks the adapter directly against
 `danteacosta/agent-reliability-protocol@main` so cross-repository contract drift
 cannot be hidden by the adapter's fake-contract unit tests.
+
+### Agentic skill results
+
+An optional `SkillInvocation` can be assigned when dispatching an item. The
+invocation carries the skill name, `skill_version`, lifecycle stage, and
+optional manifest identity. ACP runtimes receive this envelope at
+`session/start`; the generic CLI fallback keeps the same `RunSpec` boundary.
+
+Runtimes may emit a `skill.result` event using the agentic-skills result
+contract. MergeWave validates the item and skill identity, then records the
+result and every artifact reference with the `run_id`, `attempt_id`, and
+`workspace_id`. A valid skill result is useful evidence for the attempt, but it
+never satisfies PR, CI, review, scope, ancestry, merge, or human-gate checks.
+See [the skill integration contract](docs/skill-integration.md).
 
 ## License
 

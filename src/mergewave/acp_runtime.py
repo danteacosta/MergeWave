@@ -25,14 +25,17 @@ class AcpAgentRuntime:
         self._capabilities = capabilities or RuntimeCapabilities(True, True, True, ("acp",), True)
 
     def start(self, spec: RunSpec) -> RunHandle:
+        params: dict[str, object] = {
+            "run_id": spec.run_id,
+            "work_item_id": spec.work_item_id,
+            "prompt": spec.prompt,
+            "workspace_path": spec.workspace_path,
+        }
+        if spec.skill is not None:
+            params["skill"] = spec.skill.to_payload()
         response = self._transport.request(
             "session/start",
-            {
-                "run_id": spec.run_id,
-                "work_item_id": spec.work_item_id,
-                "prompt": spec.prompt,
-                "workspace_path": spec.workspace_path,
-            },
+            params,
         )
         if not isinstance(response, Mapping) or not isinstance(response.get("session_id"), str):
             raise RuntimeError("ACP session/start did not return a session_id")

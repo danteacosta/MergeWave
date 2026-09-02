@@ -126,10 +126,20 @@ is classified separately as `base_revision_mismatch`.
 
 `AgentRuntime` exposes `start`, `stream`, `continue_run`, `cancel`, and
 `capabilities`. `RunSpec` carries the prompt plus optional normalized
-`WorkItem`, `Workspace`, and `WorkerProfile` (permissions, sandbox, and cost
-limit). The repository includes a generic CLI runtime with timeout detection
-and a stdio JSON-RPC ACP transport boundary. Provider-specific session
-semantics remain runtime adapter responsibilities.
+`WorkItem`, `Workspace`, `WorkerProfile` (permissions, sandbox, and cost
+limit), and one versioned `SkillInvocation` (skill name, `skill_version`,
+lifecycle stage, and optional manifest identity). The repository includes a
+generic CLI runtime with timeout detection and a stdio JSON-RPC ACP transport
+boundary. ACP propagates the skill envelope at session start; provider-specific
+session semantics remain runtime adapter responsibilities.
+
+A runtime may emit a `skill.result` event using the versioned skill-result
+contract. The controller validates the result identity against the assigned
+invocation and records `skill.result.recorded` with the `run_id`,
+`attempt_id`, `workspace_id`, normalized result, and artifact bindings. Result
+events are idempotent and are evidence for the attempt only. They never
+satisfy delivery or human-merge gates; PR, CI, review, scope, ancestry, merge,
+and release authority remain external to the skill.
 
 ## Failure classification and recovery
 
@@ -140,12 +150,12 @@ The current vocabulary includes `workspace_missing`, `workspace_drift`,
 `merge_revision_not_in_target`,
 `review_changes_requested`, `required_reviewer_missing`, `agent_timeout`,
 `runtime_failed`, `tracker_authentication_failed`, `tracker_unavailable`,
-`retry_exhaustion`, and `reconciliation_interrupted`.
+`invalid_skill_result`, `retry_exhaustion`, and `reconciliation_interrupted`.
 
 The SQLite event log is idempotent and can reduce its ordered event stream into
 a `ControllerProjection` containing ticket states, base revision, attempt
-states, active assignments, waves, gate states, validation evidence, and pull
-requests. `DeliveryController.from_event_log()` rebuilds those durable
+states, active assignments, waves, gate states, validation evidence, pull
+requests, and bound skill results. `DeliveryController.from_event_log()` rebuilds those durable
 entities after restart. Runtime handles are intentionally not trusted across a
 restart: the recovered controller requires a fresh workspace and delivery
 observation before it can release an item. `ReconciliationLoop.reconcile_controller()`

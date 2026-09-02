@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -14,6 +14,7 @@ from .git_workspace import Workspace, WorkspaceDriftError
 from .persistence import SqliteEventLog
 from .ports import BaseRevisionProvider, DeliveryObserver, ReliabilityRecorder, TrackerAdapter, WorkspaceFactory
 from .runtime import AgentEvent, AgentRuntime, RunHandle, RunSpec, classify_runtime_event
+from .skills import SkillInvocation, SkillResult
 from .simulator import DeliveryObservation, Dispatch, FailureRecord, GateDecision, MergeWaveSimulator, classify_failure
 
 
@@ -42,6 +43,7 @@ class ControllerProjection:
     project_snapshot: Mapping[str, object] | None
     arp_emissions: frozenset[str]
     failure_records: Mapping[str, Mapping[str, object]]
+    skill_results: Mapping[str, tuple[Mapping[str, object], ...]] = field(default_factory=dict)
 
     @classmethod
     def from_event_log(cls, event_log: SqliteEventLog) -> "ControllerProjection":
@@ -50,7 +52,7 @@ class ControllerProjection:
             "attempt_records": {}, "active_assignments": {}, "gate_states": {},
             "wave_records": {}, "evidence_records": {}, "pull_requests": {},
             "prompts": {}, "project_snapshot": None, "arp_emissions": set(),
-            "failure_records": {},
+            "failure_records": {}, "skill_results": {},
         }
         reduced = event_log.reduce(initial, cls._reduce)
         return cls(
@@ -68,6 +70,7 @@ class ControllerProjection:
             project_snapshot=reduced["project_snapshot"],
             arp_emissions=frozenset(reduced["arp_emissions"]),
             failure_records=reduced["failure_records"],
+            skill_results=reduced["skill_results"],
         )
 
     @staticmethod
@@ -88,6 +91,10 @@ class ControllerProjection:
             "project_snapshot": state["project_snapshot"],
             "arp_emissions": set(state["arp_emissions"]),
             "failure_records": dict(state["failure_records"]),
+            "skill_results": {
+                item_id: tuple(records)
+                for item_id, records in state["skill_results"].items()
+            },
         }
         if event.kind == "ticket.state_changed":
             next_state["ticket_states"][payload["item_id"]] = payload["state"]
@@ -129,6 +136,11 @@ class ControllerProjection:
             next_state["arp_emissions"].add(payload["emission_id"])
         elif event.kind == "failure.recorded":
             next_state["failure_records"][payload["evidence_id"]] = dict(payload)
+        elif event.kind == "skill.result.recorded":
+            item_id = str(payload["item_id"])
+            records = list(next_state["skill_results"].get(item_id, ()))
+            records.append(dict(payload))
+            next_state["skill_results"][item_id] = tuple(records)
         return next_state
 
 
@@ -154,6 +166,7 @@ class DeliveryController:
         work_items: Mapping[str, WorkItem] | None = None,
         project_snapshot: ProjectSnapshot | None = None,
         merge_authority: str = "human_only",
+        skill_invocations: Mapping[str, SkillInvocation] | None = None,
     ) -> None:
         if merge_authority != "human_only":
             raise ValueError(
@@ -171,6 +184,9 @@ class DeliveryController:
         self._project_snapshot = project_snapshot or (
             ProjectSnapshot.from_work_items(self._work_items.values()) if self._work_items else None
         )
+        self._skill_invocations: dict[str, SkillInvocation] = dict(skill_invocations or {})
+        self._skill_results: dict[str, list[Mapping[str, object]]] = {}
+        self._recorded_skill_result_keys: set[str] = set()
         self._prompts: dict[str, str] = {}
         self._active: dict[str, ActiveAssignment] = {}
         self._review_state_published: set[str] = set()
@@ -200,7 +216,14 @@ class DeliveryController:
         controller._rehydrate(ControllerProjection.from_event_log(event_log))
         return controller
 
-    def dispatch_ready(self, prompts: Mapping[str, str]) -> tuple[Dispatch, ...]:
+    def dispatch_ready(
+        self,
+        prompts: Mapping[str, str],
+        *,
+        skill_invocations: Mapping[str, SkillInvocation] | None = None,
+    ) -> tuple[Dispatch, ...]:
+        if skill_invocations is not None:
+            self._skill_invocations.update(skill_invocations)
         self._persist_prompt_snapshots(prompts)
         self._persist_project_snapshot()
         dispatches = self._simulator.preview_ready()
@@ -223,6 +246,7 @@ class DeliveryController:
             if dispatch.attempt_number > 1:
                 run_id = f"{run_id}:attempt-{dispatch.attempt_number}"
             previous_attempt = self._attempts.get(dispatch.work_item_id)
+            skill_invocation = self._skill_invocations.get(dispatch.work_item_id)
             attempt = WorkAttempt(
                 id=f"attempt:{run_id}",
                 work_item_id=dispatch.work_item_id,
@@ -232,6 +256,8 @@ class DeliveryController:
                 started_at=workspace.created_at or datetime.now(timezone.utc),
                 state="running",
                 supersedes_attempt_id=previous_attempt.id if previous_attempt else None,
+                skill=skill_invocation.skill if skill_invocation else None,
+                skill_version=skill_invocation.skill_version if skill_invocation else None,
             )
             handle = self._runtime.start(
                 RunSpec(
@@ -241,6 +267,7 @@ class DeliveryController:
                     workspace_path=workspace.worktree_path,
                     work_item=self._work_items.get(dispatch.work_item_id),
                     workspace=workspace,
+                    skill=skill_invocation,
                 )
             )
             runtime_snapshot = self._runtime_snapshot(handle)
@@ -264,6 +291,7 @@ class DeliveryController:
                     "current_head_revision": workspace.current_head_revision,
                     "started_at": attempt.started_at.isoformat(),
                     "runtime_snapshot": runtime_snapshot,
+                    "skill": skill_invocation.to_payload() if skill_invocation else None,
                 },
                 f"attempt:{handle.run_id}",
             )
@@ -439,6 +467,10 @@ class DeliveryController:
     def work_attempt(self, item_id: str) -> WorkAttempt:
         return self._attempts[item_id]
 
+    def skill_results(self, item_id: str) -> tuple[Mapping[str, object], ...]:
+        """Return skill results bound to the current or historical attempts."""
+        return tuple(self._skill_results.get(item_id, ()))
+
     def execution_wave(self) -> ExecutionWave:
         wave = self._simulator.current_execution_wave()
         if wave is None:
@@ -447,6 +479,26 @@ class DeliveryController:
 
     def observe_runtime_events(self, item_id: str, events: list[AgentEvent]) -> FailureRecord | None:
         for event in events:
+            if event.kind == "skill.result":
+                try:
+                    self._record_skill_result(item_id, event.payload)
+                except ValueError as error:
+                    failure = FailureRecord(
+                        "invalid_skill_result",
+                        "runtime",
+                        "blocking",
+                        False,
+                        "The skill result was malformed or did not match the assigned skill.",
+                        "Emit the versioned skill-result contract for the assigned work item and attempt.",
+                        "Inspect the result payload, then reconcile or retry the attempt after correction.",
+                    )
+                    self._mark_runtime_failure(item_id, failure)
+                    self._append_event(
+                        "skill.result.rejected",
+                        {"item_id": item_id, "error": str(error)},
+                        f"skill-result-rejected:{item_id}:{hashlib.sha256(str(error).encode('utf-8')).hexdigest()}",
+                    )
+                    return failure
             code = classify_runtime_event(event)
             if code is None:
                 continue
@@ -459,22 +511,79 @@ class DeliveryController:
                 "Do not treat the runtime claim as delivery evidence; inspect and retry the attempt.",
                 "Route the item to NeedsAttention and reconcile a new attempt after the workspace is safe.",
             )
-            if item_id not in self._attention_state_published:
-                self._set_ticket_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
-                self._attention_state_published.add(item_id)
-            if item_id in self._attempts:
-                assignment = self._active.get(item_id)
-                self._attempts[item_id] = replace(self._attempts[item_id], state="needs_attention")
-                if assignment is not None:
-                    self._append_event("work_attempt.state_changed", {"run_id": assignment.handle.run_id, "state": "needs_attention"}, f"attempt-state:{assignment.handle.run_id}:needs_attention")
-            self._append_event(
-                "runtime.failed",
-                {"item_id": item_id, "failure_code": code},
-                f"runtime-failure:{item_id}:{code}",
-            )
-            self._record_failure(item_id, failure)
+            self._mark_runtime_failure(item_id, failure)
             return failure
         return None
+
+    def _mark_runtime_failure(self, item_id: str, failure: FailureRecord) -> None:
+        if item_id not in self._attention_state_published:
+            self._set_ticket_state(item_id, WorkItemState.NEEDS_ATTENTION.value)
+            self._attention_state_published.add(item_id)
+        if item_id in self._attempts:
+            assignment = self._active.get(item_id)
+            self._attempts[item_id] = replace(self._attempts[item_id], state="needs_attention")
+            if assignment is not None:
+                self._append_event(
+                    "work_attempt.state_changed",
+                    {"run_id": assignment.handle.run_id, "state": "needs_attention"},
+                    f"attempt-state:{assignment.handle.run_id}:needs_attention",
+                )
+        self._append_event(
+            "runtime.failed",
+            {"item_id": item_id, "failure_code": failure.code},
+            f"runtime-failure:{item_id}:{failure.code}",
+        )
+        self._record_failure(item_id, failure)
+
+    def _record_skill_result(self, item_id: str, event_payload: Mapping[str, object]) -> None:
+        assignment = self._active.get(item_id)
+        if assignment is None:
+            raise ValueError(f"cannot bind a skill result without an active attempt: {item_id}")
+        result = SkillResult.from_event_payload(event_payload)
+        if result.work_item_id != item_id:
+            raise ValueError(
+                f"skill result work_item_id {result.work_item_id!r} does not match active item {item_id!r}"
+            )
+        expected = self._skill_invocations.get(item_id)
+        if expected is not None and (
+            result.skill != expected.skill or result.skill_version != expected.skill_version
+        ):
+            raise ValueError(
+                "skill result identity does not match the assigned invocation "
+                f"({expected.skill}@{expected.skill_version})"
+            )
+        result_payload = result.to_payload()
+        artifact_bindings = [
+            {
+                "artifact_id": artifact.artifact_id,
+                "uri": artifact.uri,
+                "sha256": artifact.sha256,
+                "media_type": artifact.media_type,
+                "attempt_id": assignment.attempt.id,
+                "workspace_id": assignment.workspace.workspace_id,
+            }
+            for artifact in result.artifacts
+        ]
+        event_payload_for_log: dict[str, object] = {
+            "item_id": item_id,
+            "run_id": assignment.handle.run_id,
+            "attempt_id": assignment.attempt.id,
+            "workspace_id": assignment.workspace.workspace_id,
+            "skill": result.skill,
+            "skill_version": result.skill_version,
+            "result": result_payload,
+            "artifact_bindings": artifact_bindings,
+        }
+        digest = hashlib.sha256(
+            json.dumps(event_payload_for_log, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        event_key = f"skill-result:{assignment.handle.run_id}:{result.case_id}:{digest}"
+        if event_key in self._recorded_skill_result_keys:
+            return
+        event_payload_for_log["event_key"] = event_key
+        self._skill_results.setdefault(item_id, []).append(event_payload_for_log)
+        self._recorded_skill_result_keys.add(event_key)
+        self._append_event("skill.result.recorded", event_payload_for_log, event_key)
 
     def _enrich_observation(self, item_id: str, observation: DeliveryObservation) -> DeliveryObservation:
         if observation.merged and observation.merge_revision:
@@ -618,6 +727,9 @@ class DeliveryController:
                 "repository": workspace.repository,
                 "worktree_path": workspace.worktree_path,
                 "branch_ref": workspace.branch_ref,
+                "skill": self._skill_invocations[dispatch.work_item_id].to_payload()
+                if dispatch.work_item_id in self._skill_invocations
+                else None,
             },
         )
         self._record_arp_emission(emission_id, handle.run_id, "run")
@@ -954,6 +1066,11 @@ class DeliveryController:
                 work_item_id=str(item_id),
             )
             attempt_record = projection.attempt_records.get(run_id, payload)
+            raw_skill = attempt_record.get("skill") or payload.get("skill")
+            skill_invocation = None
+            if isinstance(raw_skill, Mapping):
+                skill_invocation = SkillInvocation.from_payload(raw_skill)
+                self._skill_invocations[str(item_id)] = skill_invocation
             attempt = WorkAttempt(
                 id=str(attempt_record["attempt_id"]),
                 work_item_id=str(item_id),
@@ -962,6 +1079,8 @@ class DeliveryController:
                 agent_runtime="recovered",
                 started_at=started_at,
                 state=str(attempt_record.get("state", "running")),
+                skill=skill_invocation.skill if skill_invocation else None,
+                skill_version=skill_invocation.skill_version if skill_invocation else None,
             )
             dispatch = Dispatch(
                 work_item_id=str(item_id),
@@ -1028,6 +1147,13 @@ class DeliveryController:
                 merged=bool(payload["merged"]),
                 merge_commit_sha=str(payload["merge_commit_sha"]) if payload.get("merge_commit_sha") else None,
                 attempt_id=str(payload["attempt_id"]) if payload.get("attempt_id") else None,
+            )
+        for item_id, records in projection.skill_results.items():
+            self._skill_results[item_id] = [dict(record) for record in records]
+            self._recorded_skill_result_keys.update(
+                str(record["event_key"])
+                for record in records
+                if record.get("event_key")
             )
 
 

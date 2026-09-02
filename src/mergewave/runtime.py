@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 from .contracts import WorkItem
 from .git_workspace import Workspace
+from .skills import SkillInvocation
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class RunSpec:
     work_item: WorkItem | None = None
     workspace: Workspace | None = None
     worker_profile: WorkerProfile | None = None
+    skill: SkillInvocation | None = None
 
 
 @dataclass(frozen=True)

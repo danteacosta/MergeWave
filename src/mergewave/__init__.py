@@ -28,6 +28,7 @@ from .persistence import EventRecord, IdempotencyConflictError, SqliteEventLog
 from .reliability import Arp3Contracts, Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec, RuntimeCapabilities, WorkerProfile, classify_runtime_event
+from .skills import SkillArtifact, SkillInvocation, SkillResult
 from .runtime_profiles import (
     AcpProviderProfile,
     DEFAULT_RUNTIME_REGISTRY,
@@ -94,6 +95,9 @@ __all__ = [
     "ReviewPolicy",
     "RunHandle",
     "RunSpec",
+    "SkillArtifact",
+    "SkillInvocation",
+    "SkillResult",
     "RuntimeCapabilities",
     "RuntimeAdapterProfile",
     "RuntimeAdapterRegistry",

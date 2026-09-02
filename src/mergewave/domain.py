@@ -23,6 +23,8 @@ class WorkAttempt:
     state: str
     supersedes_attempt_id: str | None = None
     ended_at: datetime | None = None
+    skill: str | None = None
+    skill_version: str | None = None
 
 
 @dataclass(frozen=True)
