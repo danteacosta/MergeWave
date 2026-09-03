@@ -28,7 +28,21 @@ from .persistence import EventRecord, IdempotencyConflictError, SqliteEventLog
 from .reliability import Arp3Contracts, Arp3Recorder
 from .reconciliation import ReconciliationLoop, ReconciliationResult
 from .runtime import AgentEvent, CliAgentRuntime, RunHandle, RunSpec, RuntimeCapabilities, WorkerProfile, classify_runtime_event
-from .skills import SkillArtifact, SkillInvocation, SkillResult
+from .skills import (
+    FileSkillManifestVerifier,
+    GitAuthorityBaseline,
+    GitWorkspaceAuthorityVerifier,
+    SkillArtifact,
+    SkillArtifactVerifier,
+    SkillAuthority,
+    SkillInvocation,
+    SkillManifestVerifier,
+    SkillResult,
+    SkillResultEvent,
+    WorkspaceAuthorityVerifier,
+    WorkspaceSkillArtifactVerifier,
+)
+from .lifecycle import DEFAULT_LIFECYCLE_STAGES, LifecycleAgentRuntime, LifecycleRouter, LifecycleStage, StageDecision
 from .runtime_profiles import (
     AcpProviderProfile,
     DEFAULT_RUNTIME_REGISTRY,
@@ -96,8 +110,22 @@ __all__ = [
     "RunHandle",
     "RunSpec",
     "SkillArtifact",
+    "SkillArtifactVerifier",
+    "SkillAuthority",
     "SkillInvocation",
+    "SkillManifestVerifier",
     "SkillResult",
+    "SkillResultEvent",
+    "FileSkillManifestVerifier",
+    "GitAuthorityBaseline",
+    "GitWorkspaceAuthorityVerifier",
+    "WorkspaceAuthorityVerifier",
+    "WorkspaceSkillArtifactVerifier",
+    "DEFAULT_LIFECYCLE_STAGES",
+    "LifecycleAgentRuntime",
+    "LifecycleRouter",
+    "LifecycleStage",
+    "StageDecision",
     "RuntimeCapabilities",
     "RuntimeAdapterProfile",
     "RuntimeAdapterRegistry",

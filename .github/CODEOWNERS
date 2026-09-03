@@ -1,0 +1,7 @@
+* @danteacosta
+
+# Changes to these files affect execution authority or result provenance.
+/src/mergewave/controller.py @danteacosta
+/src/mergewave/skills.py @danteacosta
+/src/mergewave/lifecycle.py @danteacosta
+/README.md @danteacosta

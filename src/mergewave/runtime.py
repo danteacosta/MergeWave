@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Iterable, Mapping, Sequence
+import json
+import os
 import subprocess
 from typing import Protocol, cast
 
@@ -29,6 +31,7 @@ class RuntimeCapabilities:
     supports_cancel: bool
     transports: tuple[str, ...] = ()
     supports_reattach: bool = False
+    supports_authority: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,24 @@ class CliAgentRuntime:
 
     def start(self, spec: RunSpec) -> RunHandle:
         command = self._command + ((spec.prompt,) if self._prompt_transport == "argument" else ())
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "MERGEWAVE_RUN_ID": spec.run_id,
+                "MERGEWAVE_WORK_ITEM_ID": spec.work_item_id,
+                "MERGEWAVE_WORKSPACE_PATH": spec.workspace_path,
+            }
+        )
+        if spec.workspace is not None:
+            environment["MERGEWAVE_WORKSPACE_ID"] = spec.workspace.workspace_id
+        if spec.skill is not None:
+            environment["MERGEWAVE_SKILL_INVOCATION"] = json.dumps(
+                spec.skill.to_payload(), sort_keys=True, separators=(",", ":")
+            )
+            if spec.skill.authority is not None:
+                environment["MERGEWAVE_SKILL_AUTHORITY"] = json.dumps(
+                    spec.skill.authority.to_payload(), sort_keys=True, separators=(",", ":")
+                )
         process = subprocess.Popen(
             command,
             cwd=spec.workspace_path,
@@ -101,16 +122,18 @@ class CliAgentRuntime:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=environment,
         )
         if process.stdin is None:
             raise RuntimeError("CLI runtime did not expose stdin")
         if self._prompt_transport == "stdin":
             process.stdin.write(spec.prompt)
         process.stdin.close()
-        return RunHandle(spec.run_id, process)
+        return RunHandle(spec.run_id, _CliSession(process, spec))
 
     def stream(self, handle: RunHandle) -> Iterable[AgentEvent]:
-        process = cast(subprocess.Popen[str], handle.runtime_ref)
+        session = cast(_CliSession, handle.runtime_ref)
+        process = session.process
         if process.stdout is None:
             raise RuntimeError("CLI runtime did not expose stdout")
         if self._timeout_seconds is not None:
@@ -118,7 +141,7 @@ class CliAgentRuntime:
             return
         try:
             for line in process.stdout:
-                yield AgentEvent("runtime.output", {"line": line.rstrip("\n")})
+                yield self._parse_line(line)
         finally:
             process.stdout.close()
         returncode = process.wait()
@@ -128,17 +151,19 @@ class CliAgentRuntime:
         raise RuntimeError("CLI runtime does not support continue after stdin is closed")
 
     def cancel(self, handle: RunHandle) -> AgentEvent:
-        process = cast(subprocess.Popen[str], handle.runtime_ref)
+        session = cast(_CliSession, handle.runtime_ref)
+        process = session.process
         if process.poll() is None:
             process.terminate()
             process.wait()
         return AgentEvent("runtime.cancelled", {"returncode": process.returncode})
 
     def capabilities(self) -> RuntimeCapabilities:
-        return RuntimeCapabilities(False, True, True, ("subprocess",))
+        return RuntimeCapabilities(False, True, True, ("subprocess",), False, True)
 
     def snapshot(self, handle: RunHandle) -> Mapping[str, object]:
-        process = cast(subprocess.Popen[str], handle.runtime_ref)
+        session = cast(_CliSession, handle.runtime_ref)
+        process = session.process
         return {"pid": process.pid, "reattachable": False}
 
     def _stream_with_timeout(self, process: subprocess.Popen[str]) -> Iterable[AgentEvent]:
@@ -155,13 +180,37 @@ class CliAgentRuntime:
         if timed_out:
             yield AgentEvent("runtime.timeout", {"timeout_seconds": self._timeout_seconds})
         for line in output.splitlines():
-            yield AgentEvent("runtime.output", {"line": line})
+            yield self._parse_line(line)
         yield AgentEvent("runtime.exited", {"returncode": process.returncode})
+
+    @staticmethod
+    def _parse_line(line: str) -> AgentEvent:
+        text = line.rstrip("\n")
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return AgentEvent("runtime.output", {"line": text})
+        if not isinstance(value, Mapping) or not isinstance(value.get("type"), str):
+            return AgentEvent("runtime.output", {"line": text})
+        raw_payload = value.get("payload")
+        if isinstance(raw_payload, Mapping):
+            payload = {str(key): item for key, item in raw_payload.items()}
+        else:
+            payload = {str(key): item for key, item in value.items() if key != "type"}
+        return AgentEvent(value["type"], payload)
+
+
+@dataclass(frozen=True)
+class _CliSession:
+    process: subprocess.Popen[str]
+    spec: RunSpec
 
 
 def classify_runtime_event(event: AgentEvent) -> str | None:
     if event.kind == "runtime.timeout":
         return "agent_timeout"
+    if event.kind == "authority.violation":
+        return "authority_violation"
     if event.kind == "runtime.exited" and event.payload.get("returncode") not in {0, None}:
         return "runtime_failed"
     return None

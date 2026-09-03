@@ -7,7 +7,7 @@ from typing import Protocol
 
 from .runtime import AgentEvent, AgentRuntime, RunHandle, RunSpec
 from .git_workspace import Workspace
-from .skills import SkillInvocation, SkillResult
+from .skills import SkillArtifactVerifier, SkillInvocation, SkillManifestVerifier, SkillResult, WorkspaceAuthorityVerifier
 from .simulator import DeliveryObservation
 
 
@@ -66,7 +66,10 @@ __all__ = [
     "RunHandle",
     "RunSpec",
     "SkillInvocation",
+    "SkillArtifactVerifier",
+    "SkillManifestVerifier",
     "SkillResult",
+    "WorkspaceAuthorityVerifier",
     "TrackerAdapter",
     "WorkspaceFactory",
 ]

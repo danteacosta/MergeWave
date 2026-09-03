@@ -11,6 +11,20 @@ from mergewave.runtime import (
     WorkerProfile,
     classify_runtime_event,
 )
+from mergewave.skills import SkillAuthority, SkillInvocation
+
+
+def skill() -> SkillInvocation:
+    return SkillInvocation(
+        "atdd-plan",
+        "0.3.0",
+        "plan",
+        manifest_ref="agentic-skills/.codex/manifest.json",
+        manifest_sha256="sha256:" + "a" * 64,
+        authority=SkillAuthority(
+            "read-only", (".",), ("read", "execute"), "runtime-test", "2099-01-01T00:00:00+00:00"
+        ),
+    )
 
 
 class CliAgentRuntimeTests(unittest.TestCase):
@@ -61,6 +75,34 @@ class CliAgentRuntimeTests(unittest.TestCase):
             classify_runtime_event(next(event for event in events if event.kind == "runtime.timeout")),
             "agent_timeout",
         )
+
+    def test_cli_runtime_parses_source_bound_json_events_and_exports_invocation(self) -> None:
+        runtime = CliAgentRuntime(
+            (
+                sys.executable,
+                "-c",
+                "import json, os; print(json.dumps({'type': 'skill.stage_started', 'payload': {'stage': 'plan'}})); print(os.environ['MERGEWAVE_SKILL_INVOCATION'])",
+            )
+        )
+
+        events = tuple(
+            runtime.stream(
+                runtime.start(
+                    RunSpec(
+                        "run-1",
+                        "CTRL-1",
+                        "prompt",
+                        ".",
+                        skill=skill().bind(work_item_id="CTRL-1", attempt_id="attempt:1"),
+                    )
+                )
+            )
+        )
+
+        self.assertEqual(events[0].kind, "skill.stage_started")
+        self.assertEqual(events[0].payload["stage"], "plan")
+        self.assertIn('"skill":"atdd-plan"', events[1].payload["line"])
+        self.assertTrue(runtime.capabilities().supports_authority)
 
     def test_run_spec_can_carry_work_item_workspace_and_worker_profile(self) -> None:
         profile = WorkerProfile("cli", "claude-code", "model-1", "repo-write", "restricted", 2.0)

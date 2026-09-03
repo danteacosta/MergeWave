@@ -21,3 +21,13 @@
 - [x] Persist structured `FailureRecord` evidence IDs and mirror the same code, summary, guidance, and next action into tracker comments and agent continuation messages
 - [x] Keep `soft_auto_merge` absent: controller configuration accepts only `human_only` merge authority and tests reject auto-merge requests
 - [x] Remove the production-v1 claim from public status text; publication remains an early open-source release with live acceptance explicitly opt-in
+
+## Agentic-skills integration hardening (0.3.0)
+
+- [x] Bind every invocation/result to run, work item, attempt, stage, workspace, and deterministic invocation/result IDs
+- [x] Require explicit authority envelopes, expiry, manifest content hashes, and runtime capability propagation
+- [x] Verify local artifact existence, content hashes, workspace scope, and idempotent result identity before recording evidence
+- [x] Add the executable nine-stage lifecycle router with conditional debug and explicit skip events
+- [x] Add ACP envelope propagation, CLI JSON-event parsing, CLI environment transport, and behavioral-evaluation compatibility surfaces
+- [x] Add regression tests for stale retries, malformed results, authority/manifest/artifact failures, and full lifecycle routing
+- [x] Keep delivery observer and human merge gates authoritative; skill results remain attempt evidence only

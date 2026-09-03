@@ -46,8 +46,12 @@ The current offline slice includes:
 - Linear GraphQL tracker adapter with explicit blocker mapping;
 - GitHub delivery observer for PR, CI, review, scope, merge, and ancestry evidence;
 - ACP runtime adapter for model-neutral session/event transports;
-- versioned skill invocations on `RunSpec` with ACP propagation;
-- skill-result validation and immutable event-log bindings to attempts, workspaces, and artifact references;
+- versioned skill invocations on `RunSpec` with ACP/CLI propagation;
+- strict source-bound skill-result validation with non-empty evidence, manifest
+  verification, authority envelopes, workspace-scoped artifact hashes, and
+  immutable event-log bindings;
+- executable nine-stage lifecycle routing with conditional debug and explicit
+  skipped-stage events;
 - delivery controller that composes scheduler, workspaces, runtime, tracker, and observer;
 - explicit `WorkAttempt`, `ExecutionWave`, `PullRequest`, `ValidationEvidence`, and `HumanGate` entities;
 - configurable current-review policy with required approvals and reviewers;
@@ -121,16 +125,18 @@ cannot be hidden by the adapter's fake-contract unit tests.
 
 ### Agentic skill results
 
-An optional `SkillInvocation` can be assigned when dispatching an item. The
-invocation carries the skill name, `skill_version`, lifecycle stage, and
-optional manifest identity. ACP runtimes receive this envelope at
-`session/start`; the generic CLI fallback keeps the same `RunSpec` boundary.
+An optional `SkillInvocation` can be assigned when dispatching an item. A
+skill-enabled dispatch must carry the `0.3.0` pack version, manifest reference
+and SHA-256, plus an explicit authority envelope. ACP runtimes receive this
+envelope at `session/start`; the CLI fallback receives it as both a JSON event
+contract and `MERGEWAVE_SKILL_*` environment variables.
 
-Runtimes may emit a `skill.result` event using the agentic-skills result
-contract. MergeWave validates the item and skill identity, then records the
-result and every artifact reference with the `run_id`, `attempt_id`, and
-`workspace_id`. A valid skill result is useful evidence for the attempt, but it
-never satisfies PR, CI, review, scope, ancestry, merge, or human-gate checks.
+Runtimes may emit a source-bound `skill.result` event using the
+agentic-skills result contract. MergeWave validates the run, invocation,
+attempt, workspace, stage, evidence, authority scope, and artifact hash before
+recording the result. A valid skill result is useful evidence for the attempt,
+but it never satisfies PR, CI, review, scope, ancestry, merge, or human-gate
+checks.
 See [the skill integration contract](docs/skill-integration.md).
 
 ## License

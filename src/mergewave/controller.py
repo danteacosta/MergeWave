@@ -14,7 +14,17 @@ from .git_workspace import Workspace, WorkspaceDriftError
 from .persistence import SqliteEventLog
 from .ports import BaseRevisionProvider, DeliveryObserver, ReliabilityRecorder, TrackerAdapter, WorkspaceFactory
 from .runtime import AgentEvent, AgentRuntime, RunHandle, RunSpec, classify_runtime_event
-from .skills import SkillInvocation, SkillResult
+from .skills import (
+    GitWorkspaceAuthorityVerifier,
+    SKILL_PACK_VERSION,
+    SkillArtifactVerifier,
+    SkillInvocation,
+    SkillManifestVerifier,
+    SkillResult,
+    SkillResultEvent,
+    WorkspaceAuthorityVerifier,
+    WorkspaceSkillArtifactVerifier,
+)
 from .simulator import DeliveryObservation, Dispatch, FailureRecord, GateDecision, MergeWaveSimulator, classify_failure
 
 
@@ -114,6 +124,19 @@ class ControllerProjection:
                 item_id = record.get("item_id")
                 if item_id:
                     next_state["active_assignments"].pop(item_id, None)
+        elif event.kind == "skill.stage_started":
+            item_id = str(payload["item_id"])
+            run_id = str(payload["run_id"])
+            if item_id in next_state["active_assignments"]:
+                assignment = dict(next_state["active_assignments"][item_id])
+                assignment["skill"] = payload.get("invocation")
+                assignment["stage"] = payload.get("invocation", {}).get("stage") if isinstance(payload.get("invocation"), Mapping) else None
+                assignment["invocation_id"] = payload.get("invocation", {}).get("invocation_id") if isinstance(payload.get("invocation"), Mapping) else None
+                next_state["active_assignments"][item_id] = assignment
+            if run_id in next_state["attempt_records"]:
+                attempt = dict(next_state["attempt_records"][run_id])
+                attempt["skill"] = payload.get("invocation")
+                next_state["attempt_records"][run_id] = attempt
         elif event.kind == "execution_wave.started":
             next_state["wave_states"][payload["wave_id"]] = "active"
             next_state["wave_records"][payload["wave_id"]] = dict(payload)
@@ -167,6 +190,9 @@ class DeliveryController:
         project_snapshot: ProjectSnapshot | None = None,
         merge_authority: str = "human_only",
         skill_invocations: Mapping[str, SkillInvocation] | None = None,
+        manifest_verifier: SkillManifestVerifier | None = None,
+        artifact_verifier: SkillArtifactVerifier | None = None,
+        authority_verifier: WorkspaceAuthorityVerifier | None = None,
     ) -> None:
         if merge_authority != "human_only":
             raise ValueError(
@@ -184,9 +210,16 @@ class DeliveryController:
         self._project_snapshot = project_snapshot or (
             ProjectSnapshot.from_work_items(self._work_items.values()) if self._work_items else None
         )
-        self._skill_invocations: dict[str, SkillInvocation] = dict(skill_invocations or {})
+        self._skill_templates: dict[str, SkillInvocation] = dict(skill_invocations or {})
+        self._skill_invocations: dict[str, SkillInvocation] = {}
+        self._manifest_verifier = manifest_verifier
+        self._artifact_verifier = artifact_verifier or WorkspaceSkillArtifactVerifier()
+        self._authority_verifier = authority_verifier or GitWorkspaceAuthorityVerifier()
+        self._authority_baselines: dict[str, object] = {}
         self._skill_results: dict[str, list[Mapping[str, object]]] = {}
         self._recorded_skill_result_keys: set[str] = set()
+        self._recorded_skill_result_fingerprints: dict[str, str] = {}
+        self._skill_result_seen: dict[str, str | None] = {}
         self._prompts: dict[str, str] = {}
         self._active: dict[str, ActiveAssignment] = {}
         self._review_state_published: set[str] = set()
@@ -223,13 +256,21 @@ class DeliveryController:
         skill_invocations: Mapping[str, SkillInvocation] | None = None,
     ) -> tuple[Dispatch, ...]:
         if skill_invocations is not None:
-            self._skill_invocations.update(skill_invocations)
-        self._persist_prompt_snapshots(prompts)
-        self._persist_project_snapshot()
-        dispatches = self._simulator.preview_ready()
-        missing_prompts = [item.work_item_id for item in dispatches if item.work_item_id not in prompts]
+            self._skill_templates.update(skill_invocations)
+        preview = self._simulator.preview_ready()
+        missing_prompts = [item.work_item_id for item in preview if item.work_item_id not in prompts]
         if missing_prompts:
             raise ValueError(f"missing prompts for dispatched items: {missing_prompts}")
+        for dispatch in preview:
+            skill_template = self._skill_templates.get(dispatch.work_item_id)
+            if skill_template is None and dispatch.work_item_id in self._skill_invocations:
+                skill_template = self._unbound_skill_template(self._skill_invocations[dispatch.work_item_id])
+                self._skill_templates[dispatch.work_item_id] = skill_template
+            if skill_template is not None:
+                self._validate_skill_template(skill_template)
+
+        self._persist_prompt_snapshots(prompts)
+        self._persist_project_snapshot()
 
         self._prompts.update(prompts)
 
@@ -237,16 +278,28 @@ class DeliveryController:
 
         for dispatch in dispatches:
             workspace_key = dispatch.work_item_id if dispatch.attempt_number == 1 else f"{dispatch.work_item_id}-attempt-{dispatch.attempt_number}"
-            workspace = self._workspace_factory.create(
-                workspace_key,
-                dispatch.base_revision,
-            )
-            self._set_ticket_state(dispatch.work_item_id, WorkItemState.IN_PROGRESS.value)
             run_id = f"{dispatch.work_item_id}:{dispatch.base_revision}"
             if dispatch.attempt_number > 1:
                 run_id = f"{run_id}:attempt-{dispatch.attempt_number}"
             previous_attempt = self._attempts.get(dispatch.work_item_id)
-            skill_invocation = self._skill_invocations.get(dispatch.work_item_id)
+            skill_template = self._skill_templates.get(dispatch.work_item_id)
+            if skill_template is None and dispatch.work_item_id in self._skill_invocations:
+                skill_template = self._unbound_skill_template(self._skill_invocations[dispatch.work_item_id])
+            skill_invocation = None
+            if skill_template is not None:
+                skill_invocation = skill_template.bind(
+                    work_item_id=dispatch.work_item_id,
+                    attempt_id=f"attempt:{run_id}",
+                )
+                self._skill_invocations[dispatch.work_item_id] = skill_invocation
+            workspace = self._workspace_factory.create(
+                workspace_key,
+                dispatch.base_revision,
+            )
+            if skill_invocation is not None:
+                self._authority_baselines[dispatch.work_item_id] = self._authority_verifier.capture(workspace)
+                self._skill_result_seen[dispatch.work_item_id] = None
+            self._set_ticket_state(dispatch.work_item_id, WorkItemState.IN_PROGRESS.value)
             attempt = WorkAttempt(
                 id=f"attempt:{run_id}",
                 work_item_id=dispatch.work_item_id,
@@ -258,18 +311,28 @@ class DeliveryController:
                 supersedes_attempt_id=previous_attempt.id if previous_attempt else None,
                 skill=skill_invocation.skill if skill_invocation else None,
                 skill_version=skill_invocation.skill_version if skill_invocation else None,
+                stage=skill_invocation.stage if skill_invocation else None,
+                invocation_id=skill_invocation.invocation_id if skill_invocation else None,
             )
-            handle = self._runtime.start(
-                RunSpec(
-                    run_id=run_id,
-                    work_item_id=dispatch.work_item_id,
-                    prompt=prompts[dispatch.work_item_id],
-                    workspace_path=workspace.worktree_path,
-                    work_item=self._work_items.get(dispatch.work_item_id),
-                    workspace=workspace,
-                    skill=skill_invocation,
+            try:
+                handle = self._runtime.start(
+                    RunSpec(
+                        run_id=run_id,
+                        work_item_id=dispatch.work_item_id,
+                        prompt=prompts[dispatch.work_item_id],
+                        workspace_path=workspace.worktree_path,
+                        work_item=self._work_items.get(dispatch.work_item_id),
+                        workspace=workspace,
+                        skill=skill_invocation,
+                    )
                 )
-            )
+            except Exception:
+                self._authority_baselines.pop(dispatch.work_item_id, None)
+                try:
+                    self._workspace_factory.destroy(workspace)
+                except Exception:
+                    pass
+                raise
             runtime_snapshot = self._runtime_snapshot(handle)
             if previous_attempt is not None:
                 self._attempt_history.setdefault(dispatch.work_item_id, []).append(previous_attempt)
@@ -309,6 +372,25 @@ class DeliveryController:
         assignment = self._active.get(item_id)
         if assignment is None:
             raise ValueError(f"item is not active: {item_id}")
+        try:
+            self._verify_active_authority(item_id)
+        except ValueError as error:
+            failure = FailureRecord(
+                "authority_violation",
+                "runtime",
+                "blocking",
+                True,
+                "The assigned workspace is outside the active skill authority envelope.",
+                "Inspect the changed paths and correct the runtime or issue a narrower explicit authority envelope.",
+                "Route the item to NeedsAttention and retry only after the workspace is safe.",
+            )
+            self._mark_runtime_failure(item_id, failure)
+            self._append_event(
+                "authority.violation",
+                {"item_id": item_id, "error": str(error)},
+                f"authority-violation:{item_id}:{hashlib.sha256(str(error).encode('utf-8')).hexdigest()}",
+            )
+            return GateDecision("blocked", failure)
         try:
             workspace = self._workspace_factory.inspect(assignment.workspace)
         except (FileNotFoundError, WorkspaceDriftError) as error:
@@ -479,9 +561,29 @@ class DeliveryController:
 
     def observe_runtime_events(self, item_id: str, events: list[AgentEvent]) -> FailureRecord | None:
         for event in events:
+            if event.kind == "skill.stage_started":
+                try:
+                    self._record_skill_stage_started(item_id, event.payload)
+                except ValueError as error:
+                    failure = FailureRecord(
+                        "invalid_skill_provenance",
+                        "runtime",
+                        "blocking",
+                        False,
+                        "The lifecycle stage identity did not match the assigned attempt.",
+                        "Emit a source-bound stage envelope with the active run, attempt, workspace, and authority.",
+                        "Inspect the stage event and retry the attempt after correcting the runtime adapter.",
+                    )
+                    self._mark_runtime_failure(item_id, failure)
+                    self._append_event(
+                        "skill.stage.rejected",
+                        {"item_id": item_id, "error": str(error)},
+                        f"skill-stage-rejected:{item_id}:{hashlib.sha256(str(error).encode('utf-8')).hexdigest()}",
+                    )
+                    return failure
             if event.kind == "skill.result":
                 try:
-                    self._record_skill_result(item_id, event.payload)
+                    result = self._record_skill_result(item_id, event.payload)
                 except ValueError as error:
                     failure = FailureRecord(
                         "invalid_skill_result",
@@ -499,9 +601,69 @@ class DeliveryController:
                         f"skill-result-rejected:{item_id}:{hashlib.sha256(str(error).encode('utf-8')).hexdigest()}",
                     )
                     return failure
+                if result.status in {"blocked", "failed", "needs_input"}:
+                    failure = FailureRecord(
+                        f"skill_result_{result.status}",
+                        "runtime",
+                        "blocking",
+                        result.status == "failed",
+                        f"The skill reported status {result.status!r} for the active stage.",
+                        "Use the structured findings and next_actions to correct the stage or request human input.",
+                        "Route the item to NeedsAttention and retry only after the stage evidence is understood.",
+                    )
+                    self._mark_runtime_failure(item_id, failure)
+                    return failure
+            if event.kind == "runtime.exited" and item_id in self._skill_invocations:
+                try:
+                    self._verify_active_authority(item_id)
+                except ValueError as error:
+                    failure = FailureRecord(
+                        "authority_violation",
+                        "runtime",
+                        "blocking",
+                        True,
+                        "The runtime changed workspace state outside the assigned authority envelope.",
+                        "Inspect the changed paths and narrow the command or issue a new explicit authority envelope.",
+                        "Route the item to NeedsAttention and retry only after the authority boundary is corrected.",
+                    )
+                    self._mark_runtime_failure(item_id, failure)
+                    self._append_event(
+                        "authority.violation",
+                        {"item_id": item_id, "error": str(error)},
+                        f"authority-violation:{item_id}:{hashlib.sha256(str(error).encode('utf-8')).hexdigest()}",
+                    )
+                    return failure
+                invocation = self._skill_invocations[item_id]
+                if (
+                    event.payload.get("returncode") in {0, None}
+                    and self._skill_result_seen.get(item_id) != invocation.invocation_id
+                ):
+                    failure = FailureRecord(
+                        "missing_skill_result",
+                        "runtime",
+                        "blocking",
+                        True,
+                        "The skill runtime exited without a result for the active invocation.",
+                        "Emit one source-bound skill.result event for the active stage before exiting.",
+                        "Route the item to NeedsAttention and retry after fixing the runtime adapter.",
+                    )
+                    self._mark_runtime_failure(item_id, failure)
+                    return failure
             code = classify_runtime_event(event)
             if code is None:
                 continue
+            if code == "authority_violation":
+                failure = FailureRecord(
+                    "authority_violation",
+                    "runtime",
+                    "blocking",
+                    True,
+                    "The runtime reported a workspace authority violation.",
+                    "Inspect the reported paths and correct the runtime or issue a narrower explicit authority envelope.",
+                    "Route the item to NeedsAttention and retry only after the authority boundary is corrected.",
+                )
+                self._mark_runtime_failure(item_id, failure)
+                return failure
             failure = FailureRecord(
                 code,
                 "runtime",
@@ -535,55 +697,159 @@ class DeliveryController:
         )
         self._record_failure(item_id, failure)
 
-    def _record_skill_result(self, item_id: str, event_payload: Mapping[str, object]) -> None:
+    def _record_skill_stage_started(self, item_id: str, event_payload: Mapping[str, object]) -> None:
         assignment = self._active.get(item_id)
         if assignment is None:
-            raise ValueError(f"cannot bind a skill result without an active attempt: {item_id}")
-        result = SkillResult.from_event_payload(event_payload)
-        if result.work_item_id != item_id:
-            raise ValueError(
-                f"skill result work_item_id {result.work_item_id!r} does not match active item {item_id!r}"
-            )
-        expected = self._skill_invocations.get(item_id)
-        if expected is not None and (
-            result.skill != expected.skill or result.skill_version != expected.skill_version
-        ):
-            raise ValueError(
-                "skill result identity does not match the assigned invocation "
-                f"({expected.skill}@{expected.skill_version})"
-            )
-        result_payload = result.to_payload()
-        artifact_bindings = [
-            {
-                "artifact_id": artifact.artifact_id,
-                "uri": artifact.uri,
-                "sha256": artifact.sha256,
-                "media_type": artifact.media_type,
-                "attempt_id": assignment.attempt.id,
-                "workspace_id": assignment.workspace.workspace_id,
-            }
-            for artifact in result.artifacts
-        ]
-        event_payload_for_log: dict[str, object] = {
+            raise ValueError(f"cannot bind a lifecycle stage without an active attempt: {item_id}")
+        invocation_payload = event_payload.get("invocation")
+        if not isinstance(invocation_payload, Mapping):
+            raise ValueError("skill.stage_started is missing invocation")
+        invocation = SkillInvocation.from_payload(invocation_payload)
+        if event_payload.get("run_id") != assignment.handle.run_id:
+            raise ValueError("skill stage run_id does not match the active run")
+        if event_payload.get("attempt_id") != assignment.attempt.id:
+            raise ValueError("skill stage attempt_id does not match the active attempt")
+        if event_payload.get("workspace_id") != assignment.workspace.workspace_id:
+            raise ValueError("skill stage workspace_id does not match the active workspace")
+        if invocation.work_item_id != item_id or invocation.attempt_id != assignment.attempt.id:
+            raise ValueError("skill stage invocation is not bound to the active work item and attempt")
+        if invocation.authority is None:
+            raise ValueError("skill stage invocation has no authority envelope")
+        previous = self._skill_invocations.get(item_id)
+        if previous is None:
+            raise ValueError("skill stage has no initial invocation provenance")
+        if invocation.skill_version != previous.skill_version:
+            raise ValueError("skill stage changed the skill pack version")
+        if invocation.manifest_ref != previous.manifest_ref or invocation.manifest_sha256 != previous.manifest_sha256:
+            raise ValueError("skill stage changed manifest provenance")
+        expected_invocation_id = f"invocation:{assignment.attempt.id}:{invocation.stage}:{invocation.skill}"
+        if invocation.invocation_id != expected_invocation_id:
+            raise ValueError("skill stage invocation_id is not deterministic for the active attempt")
+        if invocation.authority.is_expired():
+            raise ValueError("skill stage authority has expired")
+        self._skill_invocations[item_id] = invocation
+        self._authority_baselines[item_id] = self._authority_verifier.capture(assignment.workspace)
+        self._skill_result_seen[item_id] = None
+        self._attempts[item_id] = replace(
+            assignment.attempt,
+            stage=invocation.stage,
+            invocation_id=invocation.invocation_id,
+            skill=invocation.skill,
+            skill_version=invocation.skill_version,
+        )
+        self._active[item_id] = replace(assignment, attempt=self._attempts[item_id])
+        payload = {
             "item_id": item_id,
             "run_id": assignment.handle.run_id,
             "attempt_id": assignment.attempt.id,
             "workspace_id": assignment.workspace.workspace_id,
+            "invocation": invocation.to_payload(),
+        }
+        event_id = event_payload.get("event_id") or f"stage-started:{assignment.handle.run_id}:{invocation.invocation_id}"
+        self._append_event("skill.stage_started", payload, str(event_id))
+
+    def _record_skill_result(self, item_id: str, event_payload: Mapping[str, object]) -> SkillResult:
+        assignment = self._active.get(item_id)
+        if assignment is None:
+            raise ValueError(f"cannot bind a skill result without an active attempt: {item_id}")
+        source = SkillResultEvent.from_payload(event_payload)
+        result = source.result
+        if source.run_id != assignment.handle.run_id:
+            raise ValueError("skill result run_id does not match the active run")
+        if source.attempt_id != assignment.attempt.id:
+            raise ValueError("skill result attempt_id does not match the active attempt")
+        if source.workspace_id != assignment.workspace.workspace_id:
+            raise ValueError("skill result workspace_id does not match the active workspace")
+        expected = self._skill_invocations.get(item_id)
+        if expected is None:
+            raise ValueError("skill result cannot be accepted without an assigned invocation")
+        if source.invocation_id != expected.invocation_id:
+            raise ValueError("skill result invocation_id does not match the active invocation")
+        if result.work_item_id != item_id:
+            raise ValueError(
+                f"skill result work_item_id {result.work_item_id!r} does not match active item {item_id!r}"
+            )
+        if (
+            result.skill != expected.skill
+            or result.skill_version != expected.skill_version
+            or result.stage != expected.stage
+        ):
+            raise ValueError(
+                "skill result identity does not match the assigned invocation "
+                f"({expected.skill}@{expected.skill_version}/{expected.stage})"
+            )
+        if result.result_id != source.result.result_id:
+            raise ValueError("skill result identity is internally inconsistent")
+        authority = expected.authority
+        if authority is None:
+            raise ValueError("assigned invocation has no authority envelope")
+        baseline = self._authority_baselines.get(item_id)
+        if baseline is None:
+            raise ValueError("skill result has no authority baseline")
+        authority_observation = self._authority_verifier.verify(assignment.workspace, authority, baseline)
+        result_payload = result.to_payload()
+        artifact_bindings = []
+        for artifact in result.artifacts:
+            verification = dict(self._artifact_verifier.verify(artifact, assignment.workspace))
+            if verification.get("observed_sha256") != artifact.sha256:
+                raise ValueError(f"artifact verifier did not confirm the declared hash for {artifact.uri}")
+            verified_scope = verification.get("verified_scope")
+            if not isinstance(verified_scope, str) or not verified_scope.strip():
+                raise ValueError(f"artifact verifier did not return a verified scope for {artifact.uri}")
+            artifact_bindings.append(
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "uri": artifact.uri,
+                    "sha256": artifact.sha256,
+                    "media_type": artifact.media_type,
+                    "run_id": assignment.handle.run_id,
+                    "attempt_id": assignment.attempt.id,
+                    "workspace_id": assignment.workspace.workspace_id,
+                    "verified_scope": verified_scope,
+                    "observed_sha256": verification["observed_sha256"],
+                }
+            )
+        event_payload_for_log: dict[str, object] = {
+            "item_id": item_id,
+            "event_id": source.event_id,
+            "run_id": source.run_id,
+            "invocation_id": source.invocation_id,
+            "attempt_id": source.attempt_id,
+            "workspace_id": source.workspace_id,
             "skill": result.skill,
             "skill_version": result.skill_version,
+            "stage": result.stage,
+            "result_id": result.result_id,
             "result": result_payload,
             "artifact_bindings": artifact_bindings,
+            "authority_observation": dict(authority_observation),
         }
-        digest = hashlib.sha256(
+        fingerprint = hashlib.sha256(
             json.dumps(event_payload_for_log, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        event_key = f"skill-result:{assignment.handle.run_id}:{result.case_id}:{digest}"
+        event_key = f"skill-result:{source.run_id}:{source.attempt_id}:{result.result_id}"
         if event_key in self._recorded_skill_result_keys:
-            return
+            if self._recorded_skill_result_fingerprints.get(event_key) not in {None, fingerprint}:
+                raise ValueError("skill result idempotency key was reused for different content")
+            return result
         event_payload_for_log["event_key"] = event_key
         self._skill_results.setdefault(item_id, []).append(event_payload_for_log)
         self._recorded_skill_result_keys.add(event_key)
+        self._recorded_skill_result_fingerprints[event_key] = fingerprint
+        self._skill_result_seen[item_id] = source.invocation_id
         self._append_event("skill.result.recorded", event_payload_for_log, event_key)
+        self._authority_baselines[item_id] = self._authority_verifier.capture(assignment.workspace)
+        return result
+
+    def _verify_active_authority(self, item_id: str) -> Mapping[str, object] | None:
+        assignment = self._active.get(item_id)
+        invocation = self._skill_invocations.get(item_id)
+        baseline = self._authority_baselines.get(item_id)
+        if assignment is None or invocation is None or invocation.authority is None or baseline is None:
+            return None
+        observation = self._authority_verifier.verify(assignment.workspace, invocation.authority, baseline)
+        self._authority_baselines[item_id] = self._authority_verifier.capture(assignment.workspace)
+        return observation
 
     def _enrich_observation(self, item_id: str, observation: DeliveryObservation) -> DeliveryObservation:
         if observation.merged and observation.merge_revision:
@@ -893,6 +1159,39 @@ class DeliveryController:
         value = snapshot(handle)
         return dict(value)
 
+    def _validate_skill_template(self, invocation: SkillInvocation) -> None:
+        if invocation.is_bound:
+            raise ValueError("skill invocation templates must not be bound to a previous attempt")
+        if invocation.skill_version != SKILL_PACK_VERSION:
+            raise ValueError(
+                f"unsupported skill pack version {invocation.skill_version!r}; expected {SKILL_PACK_VERSION!r}"
+            )
+        if invocation.manifest_ref is None or invocation.manifest_sha256 is None:
+            raise ValueError("skill dispatch requires manifest_ref and manifest_sha256 provenance")
+        if invocation.authority is None:
+            raise ValueError("skill dispatch requires an explicit authority envelope")
+        if invocation.authority.is_expired():
+            raise ValueError("skill dispatch authority has expired")
+        if self._manifest_verifier is None:
+            raise ValueError("a manifest_verifier is required before dispatching a skill")
+        self._manifest_verifier.verify(invocation)
+        capabilities = getattr(self._runtime, "capabilities", None)
+        if callable(capabilities):
+            reported = capabilities()
+            if reported is not None and not getattr(reported, "supports_authority", False):
+                raise ValueError("configured runtime does not advertise authority-envelope support")
+
+    @staticmethod
+    def _unbound_skill_template(invocation: SkillInvocation) -> SkillInvocation:
+        return SkillInvocation(
+            skill=invocation.skill,
+            skill_version=invocation.skill_version,
+            stage=invocation.stage,
+            manifest_ref=invocation.manifest_ref,
+            manifest_sha256=invocation.manifest_sha256,
+            authority=invocation.authority,
+        )
+
     def _record_failure(self, item_id: str, failure: FailureRecord) -> str:
         assignment = self._active.get(item_id)
         run_id = assignment.handle.run_id if assignment is not None else item_id
@@ -1071,6 +1370,7 @@ class DeliveryController:
             if isinstance(raw_skill, Mapping):
                 skill_invocation = SkillInvocation.from_payload(raw_skill)
                 self._skill_invocations[str(item_id)] = skill_invocation
+                self._skill_templates[str(item_id)] = self._unbound_skill_template(skill_invocation)
             attempt = WorkAttempt(
                 id=str(attempt_record["attempt_id"]),
                 work_item_id=str(item_id),
@@ -1081,6 +1381,8 @@ class DeliveryController:
                 state=str(attempt_record.get("state", "running")),
                 skill=skill_invocation.skill if skill_invocation else None,
                 skill_version=skill_invocation.skill_version if skill_invocation else None,
+                stage=skill_invocation.stage if skill_invocation else None,
+                invocation_id=skill_invocation.invocation_id if skill_invocation else None,
             )
             dispatch = Dispatch(
                 work_item_id=str(item_id),
@@ -1111,6 +1413,14 @@ class DeliveryController:
             self._active[str(item_id)] = ActiveAssignment(
                 dispatch, workspace, handle, attempt, runtime_attached
             )
+            if skill_invocation is not None:
+                self._skill_result_seen.setdefault(str(item_id), None)
+                try:
+                    self._authority_baselines[str(item_id)] = self._authority_verifier.capture(workspace)
+                except ValueError:
+                    # Rehydration remains possible so the controller can expose
+                    # the failed provenance on the next runtime event.
+                    pass
             self._simulator.restore_dispatch(
                 dispatch,
                 active_wave=str(item_id) in active_wave_items,
@@ -1150,8 +1460,26 @@ class DeliveryController:
             )
         for item_id, records in projection.skill_results.items():
             self._skill_results[item_id] = [dict(record) for record in records]
+            if records:
+                last_invocation_id = records[-1].get("invocation_id")
+                if isinstance(last_invocation_id, str):
+                    self._skill_result_seen[item_id] = last_invocation_id
             self._recorded_skill_result_keys.update(
                 str(record["event_key"])
+                for record in records
+                if record.get("event_key")
+            )
+            self._recorded_skill_result_fingerprints.update(
+                (
+                    str(record["event_key"]),
+                    hashlib.sha256(
+                        json.dumps(
+                            {key: value for key, value in record.items() if key != "event_key"},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                )
                 for record in records
                 if record.get("event_key")
             )

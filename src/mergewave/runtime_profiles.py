@@ -86,9 +86,9 @@ def _profile_factory(
         if not selected_command:
             raise ValueError("runtime adapter command cannot be empty")
         capabilities = (
-            RuntimeCapabilities(True, True, True, ("acp", "stdio"), True)
+            RuntimeCapabilities(True, True, True, ("acp", "stdio"), True, True)
             if transport == "acp"
-            else RuntimeCapabilities(False, True, True, ("cli", "subprocess"), False)
+            else RuntimeCapabilities(False, True, True, ("cli", "subprocess"), False, True)
         )
         return RuntimeAdapterProfile(
             name=name,

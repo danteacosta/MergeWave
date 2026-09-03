@@ -127,11 +127,12 @@ is classified separately as `base_revision_mismatch`.
 `AgentRuntime` exposes `start`, `stream`, `continue_run`, `cancel`, and
 `capabilities`. `RunSpec` carries the prompt plus optional normalized
 `WorkItem`, `Workspace`, `WorkerProfile` (permissions, sandbox, and cost
-limit), and one versioned `SkillInvocation` (skill name, `skill_version`,
-lifecycle stage, and optional manifest identity). The repository includes a
-generic CLI runtime with timeout detection and a stdio JSON-RPC ACP transport
-boundary. ACP propagates the skill envelope at session start; provider-specific
-session semantics remain runtime adapter responsibilities.
+limit), and one or more versioned `SkillInvocation` records (skill name, `skill_version`,
+lifecycle stage, manifest content identity, and explicit authority envelope).
+The repository includes a generic CLI runtime with timeout detection and a
+stdio JSON-RPC ACP transport boundary. ACP propagates the skill envelope at
+session start; provider-specific session semantics remain runtime adapter
+responsibilities.
 
 A runtime may emit a `skill.result` event using the versioned skill-result
 contract. The controller validates the result identity against the assigned
@@ -149,8 +150,11 @@ The current vocabulary includes `workspace_missing`, `workspace_drift`,
 `base_revision_mismatch`, `pull_request_unlinked`, `ci_pending`, `stale_ci`,
 `merge_revision_not_in_target`,
 `review_changes_requested`, `required_reviewer_missing`, `agent_timeout`,
-`runtime_failed`, `tracker_authentication_failed`, `tracker_unavailable`,
-`invalid_skill_result`, `retry_exhaustion`, and `reconciliation_interrupted`.
+`runtime_failed`, `authority_violation`, `missing_skill_result`,
+`tracker_authentication_failed`, `tracker_unavailable`, `invalid_skill_result`,
+`invalid_skill_provenance`, `skill_result_blocked`, `skill_result_failed`,
+`skill_result_needs_input`, `retry_exhaustion`, and
+`reconciliation_interrupted`.
 
 The SQLite event log is idempotent and can reduce its ordered event stream into
 a `ControllerProjection` containing ticket states, base revision, attempt
@@ -176,6 +180,8 @@ The current ports and adapters are:
 - Git: `GitBaseRevisionProvider` fetches `origin/main` and proves that an
   observed `merge_revision` is an ancestor of that fetched target revision;
 - CLI and ACP runtimes;
+- sequential agentic lifecycle routing with stage-specific authority and
+  explicit conditional-stage events;
 - ACP launch profiles for Codex, Claude Code, Gemini, and OpenHands. Profiles
   describe commands, capabilities, sandbox, permissions, and cost limits but
   do not import provider SDKs or resolve credentials;

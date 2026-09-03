@@ -40,7 +40,7 @@ def _demo() -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mergewave")
-    parser.add_argument("--version", action="version", version="0.1.0")
+    parser.add_argument("--version", action="version", version="0.2.0")
     parser.add_argument("--demo", action="store_true", help="run the offline frontier demo")
     parser.add_argument("--linear-smoke", action="store_true", help="run a read-only Linear API smoke check")
     parser.add_argument("--github-smoke", action="store_true", help="run a read-only GitHub API smoke check")

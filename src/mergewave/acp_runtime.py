@@ -22,7 +22,7 @@ class AcpAgentRuntime:
 
     def __init__(self, transport: AcpTransport, *, capabilities: RuntimeCapabilities | None = None) -> None:
         self._transport = transport
-        self._capabilities = capabilities or RuntimeCapabilities(True, True, True, ("acp",), True)
+        self._capabilities = capabilities or RuntimeCapabilities(True, True, True, ("acp",), True, True)
 
     def start(self, spec: RunSpec) -> RunHandle:
         params: dict[str, object] = {
@@ -47,7 +47,11 @@ class AcpAgentRuntime:
         for event in self._transport.events(handle.runtime_ref):
             if isinstance(event, Mapping):
                 kind = str(event.get("type", "runtime.event"))
-                payload = {str(key): value for key, value in event.items() if key != "type"}
+                raw_payload = event.get("payload")
+                if isinstance(raw_payload, Mapping):
+                    payload = {str(key): value for key, value in raw_payload.items()}
+                else:
+                    payload = {str(key): value for key, value in event.items() if key != "type"}
             else:
                 kind = "runtime.event"
                 payload = {"value": event}

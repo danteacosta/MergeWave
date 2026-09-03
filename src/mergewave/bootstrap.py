@@ -16,9 +16,15 @@ from .contracts import (
 )
 from .controller import DeliveryController
 from .persistence import SqliteEventLog
-from .ports import BaseRevisionProvider, DeliveryObserver, ReliabilityRecorder, TrackerAdapter, WorkspaceFactory
+from .ports import (
+    BaseRevisionProvider,
+    DeliveryObserver,
+    ReliabilityRecorder,
+    TrackerAdapter,
+    WorkspaceFactory,
+)
 from .runtime import AgentRuntime
-from .skills import SkillInvocation
+from .skills import SkillArtifactVerifier, SkillInvocation, SkillManifestVerifier, WorkspaceAuthorityVerifier
 from .simulator import GateDecision, MergeWaveSimulator
 
 
@@ -52,6 +58,9 @@ def build_linear_application(
     recorder: ReliabilityRecorder | None = None,
     event_log: SqliteEventLog | None = None,
     skill_invocations: Mapping[str, SkillInvocation] | None = None,
+    manifest_verifier: SkillManifestVerifier | None = None,
+    artifact_verifier: SkillArtifactVerifier | None = None,
+    authority_verifier: WorkspaceAuthorityVerifier | None = None,
 ) -> LinearDeliveryApplication:
     candidates = tuple(tracker.fetch_candidates())
     payloads = tuple(_candidate_payload(candidate) for candidate in candidates)
@@ -82,6 +91,9 @@ def build_linear_application(
         work_items=work_items,
         project_snapshot=project_snapshot,
         skill_invocations=skill_invocations,
+        manifest_verifier=manifest_verifier,
+        artifact_verifier=artifact_verifier,
+        authority_verifier=authority_verifier,
     )
     prompts = {
         item.item_id: _prompt_for(item)

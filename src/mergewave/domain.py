@@ -25,6 +25,8 @@ class WorkAttempt:
     ended_at: datetime | None = None
     skill: str | None = None
     skill_version: str | None = None
+    stage: str | None = None
+    invocation_id: str | None = None
 
 
 @dataclass(frozen=True)
