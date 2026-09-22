@@ -347,6 +347,18 @@ class SkillContractTests(unittest.TestCase):
             baseline = verifier.capture(workspace)
             self.assertEqual(verifier.verify(workspace, authority(), baseline)["changed_paths"], [])
 
+    def test_slash_authority_does_not_authorize_literal_backslash_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init_authority_repository(root)
+            workspace = Workspace("ws", "demo", directory, "main", "base", "base", "base")
+            verifier = GitWorkspaceAuthorityVerifier()
+            baseline = verifier.capture(workspace)
+            (root / "allowed\\file.txt").write_text("unauthorized", encoding="utf-8")
+            scoped = SkillAuthority("mutating-with-authority", ("allowed/file.txt",), ("read", "write"), "test-policy", "2099-01-01T00:00:00+00:00")
+            with self.assertRaises(ValueError):
+                verifier.verify(workspace, scoped, baseline)
+
     @staticmethod
     def _init_authority_repository(root: Path) -> None:
         subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)

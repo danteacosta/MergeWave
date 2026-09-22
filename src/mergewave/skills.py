@@ -51,7 +51,9 @@ def normalize_sha256(value: object, field: str = "sha256") -> str:
 
 
 def _scope_path(value: object, field: str) -> str:
-    value = _string(value, field).replace("\\", "/")
+    value = _string(value, field)
+    if "\\" in value:
+        raise ValueError(f"{field} cannot contain backslashes; use POSIX workspace paths")
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or "\x00" in value:
         raise ValueError(f"{field} must stay inside the workspace")

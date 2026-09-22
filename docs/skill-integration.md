@@ -107,7 +107,9 @@ content and executable mode against the stage's captured baseline. Existing
 uncommitted work is allowed to remain unchanged; further edits, deletions,
 staging, or commits are checked against the current stage's write authority.
 Git paths are read with NUL delimiters so spaces, Unicode, and embedded newline
-characters cannot change which path is checked. Symlink targets are compared
+characters cannot change which path is checked. Backslashes are rejected in
+workspace paths rather than translated into slashes: on POSIX those names
+refer to distinct files and must not inherit each other's authority. Symlink targets are compared
 without reading files outside the workspace; unsupported entries fail closed.
 
 This is a before/after observation of tracked and non-ignored untracked files,
