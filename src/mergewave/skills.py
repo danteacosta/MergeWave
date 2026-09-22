@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import os
+import stat
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -605,7 +607,8 @@ class WorkspaceSkillArtifactVerifier:
 @dataclass(frozen=True)
 class GitAuthorityBaseline:
     head_revision: str
-    dirty_paths: frozenset[str]
+    workspace_root: str
+    path_states: Mapping[str, tuple[object, ...]]
 
 
 class GitWorkspaceAuthorityVerifier:
@@ -615,7 +618,9 @@ class GitWorkspaceAuthorityVerifier:
         root = Path(str(workspace.worktree_path)).resolve()
         if not root.is_dir():
             raise ValueError(f"assigned workspace does not exist: {root}")
-        return GitAuthorityBaseline(self._git(root, "rev-parse", "HEAD"), frozenset(self._status_paths(root)))
+        return GitAuthorityBaseline(
+            self._git(root, "rev-parse", "HEAD").strip(), str(root), self._path_states(root)
+        )
 
     def verify(
         self,
@@ -630,9 +635,15 @@ class GitWorkspaceAuthorityVerifier:
         root = Path(str(workspace.worktree_path)).resolve()
         if not root.is_dir():
             raise ValueError(f"assigned workspace does not exist: {root}")
-        head_revision = self._git(root, "rev-parse", "HEAD")
-        changed = set(self._git_lines(root, "diff", "--name-only", baseline.head_revision, head_revision))
-        changed.update(set(self._status_paths(root)) - set(baseline.dirty_paths))
+        if str(root) != baseline.workspace_root:
+            raise ValueError("authority baseline belongs to another workspace")
+        head_revision = self._git(root, "rev-parse", "HEAD").strip()
+        changed = set(self._git_paths(root, "diff", "--name-only", "--no-renames", "-z", baseline.head_revision, head_revision))
+        current_states = self._path_states(root)
+        changed.update(
+            path for path in baseline.path_states.keys() | current_states.keys()
+            if baseline.path_states.get(path) != current_states.get(path)
+        )
         changed_paths = tuple(sorted(path for path in changed if path))
         if changed_paths:
             if "write" not in authority.allowed_operations:
@@ -650,26 +661,44 @@ class GitWorkspaceAuthorityVerifier:
                 cwd=root,
                 check=True,
                 capture_output=True,
-                text=True,
             )
         except (OSError, subprocess.CalledProcessError) as error:
             raise ValueError(f"workspace Git inspection failed: {root}") from error
-        return result.stdout.strip()
+        return os.fsdecode(result.stdout)
 
     @classmethod
-    def _git_lines(cls, root: Path, *args: str) -> tuple[str, ...]:
-        return tuple(line for line in cls._git(root, *args).splitlines() if line.strip())
+    def _git_paths(cls, root: Path, *args: str) -> tuple[str, ...]:
+        return tuple(path for path in cls._git(root, *args).split("\0") if path)
 
     @classmethod
-    def _status_paths(cls, root: Path) -> tuple[str, ...]:
-        paths: list[str] = []
-        for line in cls._git_lines(root, "status", "--porcelain", "--untracked-files=all"):
-            raw = line[3:] if len(line) >= 4 else ""
-            if " -> " in raw:
-                raw = raw.rsplit(" -> ", 1)[1]
-            if raw:
-                paths.append(raw.replace("\\", "/"))
-        return tuple(paths)
+    def _path_states(cls, root: Path) -> dict[str, tuple[object, ...]]:
+        # Include index identity as well as working bytes: staging alone is a write.
+        index: dict[str, list[str]] = {}
+        for entry in cls._git_paths(root, "ls-files", "--stage", "-z"):
+            identity, path = entry.split("\t", 1)
+            index.setdefault(path, []).append(identity)
+        paths = set(index) | set(cls._git_paths(root, "ls-files", "--others", "--exclude-standard", "-z"))
+        states: dict[str, tuple[object, ...]] = {}
+        for path in paths:
+            candidate = root / path
+            # Never follow a parent symlink outside the assigned workspace.
+            try:
+                candidate.parent.resolve().relative_to(root)
+                mode = candidate.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    content = os.fsencode(os.readlink(candidate))
+                elif stat.S_ISREG(mode):
+                    with candidate.open("rb") as stream:
+                        content = hashlib.file_digest(stream, "sha256").digest()
+                else:
+                    raise ValueError(f"unsupported workspace entry: {path}")
+                working = (stat.S_IFMT(mode), bool(mode & 0o111), content)
+            except FileNotFoundError:
+                working = None
+            except (OSError, ValueError) as error:
+                raise ValueError(f"workspace path cannot be inspected safely: {path}") from error
+            states[path] = (tuple(index.get(path, ())), working)
+        return states
 
 
 __all__ = [

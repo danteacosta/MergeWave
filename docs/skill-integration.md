@@ -99,3 +99,20 @@ attempt/workspace, routes `debug` only when a prior stage fails, and emits
 `skill.stage_skipped` when a conditional stage is not required. Configure
 stage-specific authorities explicitly when a pipeline moves from read-only
 analysis to mutation.
+
+### Workspace authority verification
+
+The Git verifier compares committed changes, index entries, and working-file
+content and executable mode against the stage's captured baseline. Existing
+uncommitted work is allowed to remain unchanged; further edits, deletions,
+staging, or commits are checked against the current stage's write authority.
+Git paths are read with NUL delimiters so spaces, Unicode, and embedded newline
+characters cannot change which path is checked. Symlink targets are compared
+without reading files outside the workspace; unsupported entries fail closed.
+
+This is a before/after observation of tracked and non-ignored untracked files,
+not an operating-system sandbox or a complete write audit. It does not observe
+ignored files, outside-workspace writes, network activity, or edits reverted
+before verification. Submodules require a separately configured verifier.
+Capture and verification hash workspace files, so their cost scales with the
+size of those files. Runtime isolation remains necessary for stronger guarantees.
