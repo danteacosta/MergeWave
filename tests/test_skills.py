@@ -269,6 +269,105 @@ class SkillContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exceed authority"):
                 authority_verifier.verify(workspace, scoped, baseline)
 
+    def test_read_only_stage_rejects_further_edits_to_existing_dirty_files(self) -> None:
+        for filename in ("tracked.txt", "draft.txt"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._init_authority_repository(root)
+                target = root / filename
+                target.write_text("before stage", encoding="utf-8")
+                workspace = Workspace("ws", "demo", directory, "main", "base", "base", "base")
+                verifier = GitWorkspaceAuthorityVerifier()
+                baseline = verifier.capture(workspace)
+                self.assertEqual(verifier.verify(workspace, authority(), baseline)["changed_paths"], [])
+                target.write_text("after unauthorized edit", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "forbids workspace writes"):
+                    verifier.verify(workspace, authority(), baseline)
+
+    def test_authorized_changes_preserve_exact_git_pathnames(self) -> None:
+        for filename in ("tracked.txt", "a name.txt", "line\nbreak.txt", "before -> after.txt", "carriage\rreturn.txt", " spaced.txt", "ação.txt"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._init_authority_repository(root)
+                target = root / filename
+                target.write_text("committed file", encoding="utf-8")
+                subprocess.run(["git", "add", "--", filename], cwd=root, check=True)
+                subprocess.run(["git", "commit", "-m", "file"], cwd=root, check=True, capture_output=True)
+                workspace = Workspace("ws", "demo", directory, "main", "base", "base", "base")
+                verifier = GitWorkspaceAuthorityVerifier()
+                baseline = verifier.capture(workspace)
+                target.write_text("changed", encoding="utf-8")
+                scoped = SkillAuthority("mutating-with-authority", (filename,), ("read", "write"), "test-policy", "2099-01-01T00:00:00+00:00")
+                self.assertEqual(verifier.verify(workspace, scoped, baseline)["changed_paths"], [filename])
+
+    def test_read_only_stage_rejects_index_only_and_deleted_dirty_files(self) -> None:
+        for change in ("stage", "delete", "executable", "commit"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._init_authority_repository(root)
+                target = root / "tracked.txt"
+                target.write_text("existing edit", encoding="utf-8")
+                workspace = Workspace("ws", "demo", directory, "main", "base", "base", "base")
+                verifier = GitWorkspaceAuthorityVerifier()
+                baseline = verifier.capture(workspace)
+                if change in ("stage", "commit"):
+                    subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+                    if change == "commit":
+                        subprocess.run(["git", "commit", "-m", "commit existing edit"], cwd=root, check=True, capture_output=True)
+                elif change == "delete":
+                    target.unlink()
+                else:
+                    target.chmod(0o755)
+                with self.assertRaisesRegex(ValueError, "forbids workspace writes"):
+                    verifier.verify(workspace, authority(), baseline)
+
+    def test_symlink_changes_are_detected_without_reading_the_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init_authority_repository(root)
+            link = root / "link"
+            link.symlink_to("/does-not-exist/outside-a")
+            workspace = Workspace("ws", "demo", directory, "main", "base", "base", "base")
+            verifier = GitWorkspaceAuthorityVerifier()
+            baseline = verifier.capture(workspace)
+            self.assertEqual(verifier.verify(workspace, authority(), baseline)["changed_paths"], [])
+            link.unlink()
+            link.symlink_to("/does-not-exist/outside-b")
+            with self.assertRaisesRegex(ValueError, "forbids workspace writes"):
+                verifier.verify(workspace, authority(), baseline)
+
+    def test_staged_edits_existing_at_capture_remain_accepted_if_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init_authority_repository(root)
+            (root / "tracked.txt").write_text("staged before stage", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            workspace = Workspace("ws", "demo", directory, "main", "base", "base", "base")
+            verifier = GitWorkspaceAuthorityVerifier()
+            baseline = verifier.capture(workspace)
+            self.assertEqual(verifier.verify(workspace, authority(), baseline)["changed_paths"], [])
+
+    def test_slash_authority_does_not_authorize_literal_backslash_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init_authority_repository(root)
+            workspace = Workspace("ws", "demo", directory, "main", "base", "base", "base")
+            verifier = GitWorkspaceAuthorityVerifier()
+            baseline = verifier.capture(workspace)
+            (root / "allowed\\file.txt").write_text("unauthorized", encoding="utf-8")
+            scoped = SkillAuthority("mutating-with-authority", ("allowed/file.txt",), ("read", "write"), "test-policy", "2099-01-01T00:00:00+00:00")
+            with self.assertRaises(ValueError):
+                verifier.verify(workspace, scoped, baseline)
+
+    @staticmethod
+    def _init_authority_repository(root: Path) -> None:
+        subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "MergeWave Test"], cwd=root, check=True)
+        (root / "tracked.txt").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True, capture_output=True)
+
     def _controller(
         self,
         *,
